@@ -200,7 +200,9 @@ def observe(owner, stage, timeout=45, capture=None):
         try:
             label, data = events.get(timeout=.05)
         except queue.Empty:
-            continue
+            # EOF may precede the host process signal. Re-evaluate completion
+            # even when no further pipe events can arrive.
+            label, data = None, b''
         if data is None:
             ended.add(label)
         elif label == 'stdout' and stage == 'initialize':

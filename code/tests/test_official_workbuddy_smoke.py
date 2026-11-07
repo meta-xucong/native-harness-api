@@ -230,6 +230,59 @@ class OfflineTests(unittest.TestCase):
             with self.assertRaisesRegex(SmokeError, 'ARCHIVE_MEMBER_UNSAFE'):
                 archive_inventory(listing)
 
+    def test_help_both_eof_before_host_exit_without_new_output(self):
+        # Deterministic ordering: both EOFs first, host signal changes only when
+        # the consumer next polls an empty queue. No sleep or native process.
+        class Owner:
+            stdin = io.BytesIO()
+            exited = False
+            def host_exited(self):
+                return self.exited
+            def exit_code(self):
+                return 0
+        owner = Owner()
+        class Events:
+            def __init__(self):
+                self.items = [('stdout', None), ('stderr', None)]
+            def get(self, timeout):
+                if self.items:
+                    return self.items.pop(0)
+                owner.exited = True
+                raise smoke.queue.Empty
+        ticks = iter(i / 100 for i in range(100))
+        capture = (Events(), smoke.threading.Event(),
+                   {'stdout':bytearray(b'Usage --help --acp'), 'stderr':bytearray()}, [])
+        with patch.object(smoke.time, 'monotonic', side_effect=lambda:next(ticks)):
+            result, _, _, _ = observe(owner, 'help', .5, capture=capture)
+        self.assertTrue(result['help_flag_observed'])
+
+
+    def test_help_empty_queue_does_not_relax_completion(self):
+        for end_count, exited, code, output, expected in (
+                (1, True, 0, b'--help', 'NATIVE_DEADLINE'),
+                (2, False, None, b'--help', 'NATIVE_DEADLINE'),
+                (2, True, 17, b'--help', 'HELP_EXIT_NONZERO'),
+                (2, True, 0, b'not help', 'HELP_NOT_OBSERVED')):
+            class Owner:
+                stdin = io.BytesIO()
+                def host_exited(self):
+                    return exited
+                def exit_code(self):
+                    return code
+            class Events:
+                def __init__(self):
+                    self.items = [('stdout', None), ('stderr', None)][:end_count]
+                def get(self, timeout):
+                    if self.items:
+                        return self.items.pop(0)
+                    raise smoke.queue.Empty
+            ticks = iter(i / 100 for i in range(100))
+            capture = (Events(), smoke.threading.Event(),
+                       {'stdout':bytearray(output), 'stderr':bytearray()}, [])
+            with patch.object(smoke.time, 'monotonic', side_effect=lambda:next(ticks)):
+                with self.assertRaisesRegex(SmokeError, expected):
+                    observe(Owner(), 'help', .5, capture=capture)
+
 
 if __name__ == "__main__":
     unittest.main()
