@@ -3,5 +3,8 @@
 # Release allowlist must have identical Git blob bytes on Windows and Linux.
 code/src/native_harness_api/__init__.py text eol=lf
 code/src/native_harness_api/workbuddy_*.py text eol=lf
+code/src/native_harness_api/windows_job.py text eol=lf
+code/tools/installed_workbuddy_smoke.py text eol=lf
+code/tools/installed_smoke_controller.ps1 text eol=lf
 code/packaging/** text eol=lf
 .github/workflows/workbuddy-local-trial.yml text eol=lf

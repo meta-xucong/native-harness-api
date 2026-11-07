@@ -39,6 +39,11 @@ jobs:
         shell: pwsh
         run: |
           python -c "import urllib.request; urllib.request.urlretrieve('https://www.python.org/ftp/python/3.13.17/python-3.13.17-embed-amd64.zip', 'python-runtime.zip')"
+      - name: Retained-controller synthetic integration, no WorkBuddy execution
+        if: runner.os == 'Windows'
+        env:
+          INSTALLED_SMOKE_RUNTIME_ZIP: ${{ github.workspace }}/python-runtime.zip
+        run: python -m unittest discover -s code/tests -p test_installed_smoke_controller.py -v
       - name: Build allowlisted test kit, verify runtime SHA and preserve license
         if: runner.os == 'Windows'
         shell: pwsh
@@ -65,5 +70,27 @@ jobs:
           path: |
             workbuddy-probe-windows-x64.zip
             workbuddy-probe-windows-x64.zip.sha256
+          retention-days: 14
+          if-no-files-found: error
+      - name: Build bounded installed-entry diagnostic kit, no native execution
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          python code/packaging/build_installed_smoke.py --runtime-zip python-runtime.zip --source-revision $env:SOURCE_REVISION --output workbuddy-installed-entry-diagnostic.zip
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          (Get-FileHash workbuddy-installed-entry-diagnostic.zip -Algorithm SHA256).Hash.ToLower() | Out-File -Encoding ascii workbuddy-installed-entry-diagnostic.zip.sha256
+          $env:DIAGNOSTIC_KIT_DIR = Join-Path $env:RUNNER_TEMP 'Installed Entry 受限测试'
+          python -c "import os,zipfile; zipfile.ZipFile('workbuddy-installed-entry-diagnostic.zip').extractall(os.environ['DIAGNOSTIC_KIT_DIR'])"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & "$env:DIAGNOSTIC_KIT_DIR/runtime/python.exe" -I -B "$env:DIAGNOSTIC_KIT_DIR/launcher.py" --help
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Upload installed-entry diagnostic for explicit authorized testing only
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: workbuddy-installed-entry-diagnostic-${{ env.SOURCE_REVISION }}
+          path: |
+            workbuddy-installed-entry-diagnostic.zip
+            workbuddy-installed-entry-diagnostic.zip.sha256
           retention-days: 14
           if-no-files-found: error
