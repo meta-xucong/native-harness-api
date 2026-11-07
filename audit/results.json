@@ -1,0 +1,217 @@
+{
+  "scope": "DOCUMENT_AND_ABSTRACT_MODEL_ONLY",
+  "disclaimer": "Not product, integration, vendor authorization or production security validation.",
+  "baseline_date": "2026-11-07",
+  "executed_at_utc": "2026-11-07T05:59:28.263Z",
+  "environment": {
+    "node": "v24.14.1",
+    "platform": "win32",
+    "arch": "x64"
+  },
+  "source_snapshots": {
+    "bridge": "cf1e72ec3830854fa0983eb9acb92fad62a604c8",
+    "sub2api": "2695b585aa7c2b9fed6fa50b9b8455c0ac2c1a14",
+    "wrapper": "a6c820d9a843f73c2e09aad3b4dead1544c25006"
+  },
+  "summary": {
+    "total": 48,
+    "passed": 48,
+    "failed": 0
+  },
+  "product_acceptance": "NOT_RUN",
+  "release_gates": "G01-G10 OPEN",
+  "tests": [
+    {
+      "name": "D01_required_files",
+      "status": "PASS"
+    },
+    {
+      "name": "D02_utf8_roundtrip",
+      "status": "PASS"
+    },
+    {
+      "name": "D03_relative_markdown_links",
+      "status": "PASS"
+    },
+    {
+      "name": "D04_twelve_invariants",
+      "status": "PASS"
+    },
+    {
+      "name": "D05_eleven_states",
+      "status": "PASS"
+    },
+    {
+      "name": "D06_thirty_six_unrun_product_scenarios",
+      "status": "PASS"
+    },
+    {
+      "name": "D07_ten_open_release_gates",
+      "status": "PASS"
+    },
+    {
+      "name": "D08_pinned_source_snapshots",
+      "status": "PASS"
+    },
+    {
+      "name": "D09_obvious_secret_patterns_only",
+      "status": "PASS"
+    },
+    {
+      "name": "D10_scope_and_honest_evidence_labels",
+      "status": "PASS"
+    },
+    {
+      "name": "D11_replay_before_new_admission_and_quota",
+      "status": "PASS"
+    },
+    {
+      "name": "D12_blueprint_snapshot_has_no_product_implementation",
+      "status": "PASS"
+    },
+    {
+      "name": "M01_same_key_returns_same_task",
+      "status": "PASS"
+    },
+    {
+      "name": "M02_changed_input_conflicts",
+      "status": "PASS"
+    },
+    {
+      "name": "M03_offline_new_request_not_accepted",
+      "status": "PASS"
+    },
+    {
+      "name": "M04_shared_single_slot_across_profiles",
+      "status": "PASS"
+    },
+    {
+      "name": "M05_launch_only_once",
+      "status": "PASS"
+    },
+    {
+      "name": "M06_lease_loss_after_grant_never_requeues",
+      "status": "PASS"
+    },
+    {
+      "name": "M07_reconnect_does_not_spawn_again",
+      "status": "PASS"
+    },
+    {
+      "name": "M08_intent_crash_remains_uncertain",
+      "status": "PASS"
+    },
+    {
+      "name": "M09_cancel_before_start_wins",
+      "status": "PASS"
+    },
+    {
+      "name": "M10_cancel_request_is_not_confirmation",
+      "status": "PASS"
+    },
+    {
+      "name": "M11_confirmed_cancel_no_respawn",
+      "status": "PASS"
+    },
+    {
+      "name": "M12_http_timeout_keeps_task_and_slot",
+      "status": "PASS"
+    },
+    {
+      "name": "M13_prestart_reclaim_invalidates_old_claim",
+      "status": "PASS"
+    },
+    {
+      "name": "M14_expiry_cannot_stop_possible_execution",
+      "status": "PASS"
+    },
+    {
+      "name": "M15_missing_native_terminal_not_success",
+      "status": "PASS"
+    },
+    {
+      "name": "M16_boolean_exit_not_integer_zero",
+      "status": "PASS"
+    },
+    {
+      "name": "M17_string_exit_not_integer_zero",
+      "status": "PASS"
+    },
+    {
+      "name": "M18_empty_result_not_synthetic_success",
+      "status": "PASS"
+    },
+    {
+      "name": "M19_success_is_immutable_under_cancel",
+      "status": "PASS"
+    },
+    {
+      "name": "M20_success_after_confirmed_cancel_conflicts",
+      "status": "PASS"
+    },
+    {
+      "name": "M21_duplicate_terminal_receipt_is_idempotent",
+      "status": "PASS"
+    },
+    {
+      "name": "M22_duplicate_event_is_deduplicated",
+      "status": "PASS"
+    },
+    {
+      "name": "M23_conflicting_or_wrong_grant_event_rejected",
+      "status": "PASS"
+    },
+    {
+      "name": "M24_offline_and_no_quota_replay_allowed",
+      "status": "PASS"
+    },
+    {
+      "name": "M25_profile_change_does_not_change_replay",
+      "status": "PASS"
+    },
+    {
+      "name": "M26_tenant_scope_prevents_result_reuse",
+      "status": "PASS"
+    },
+    {
+      "name": "M27_principal_scope_prevents_result_reuse",
+      "status": "PASS"
+    },
+    {
+      "name": "M28_source_scope_prevents_result_reuse",
+      "status": "PASS"
+    },
+    {
+      "name": "M29_expired_result_tombstone_never_reexecutes",
+      "status": "PASS"
+    },
+    {
+      "name": "M30_unknown_usage_not_fake_zero_settlement",
+      "status": "PASS"
+    },
+    {
+      "name": "M31_known_usage_replay_settles_once",
+      "status": "PASS"
+    },
+    {
+      "name": "M32_native_failure_no_restart",
+      "status": "PASS"
+    },
+    {
+      "name": "M33_same_body_different_key_is_new_operation",
+      "status": "PASS"
+    },
+    {
+      "name": "M34_prestart_expired_task_cannot_start",
+      "status": "PASS"
+    },
+    {
+      "name": "M35_start_grant_without_intent_stays_uncertain",
+      "status": "PASS"
+    },
+    {
+      "name": "M36_native_refusal_is_not_transport_failure",
+      "status": "PASS"
+    }
+  ]
+}

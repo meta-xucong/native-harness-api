@@ -1,0 +1,25 @@
+# Keep local credentials, execution state and artifacts out of this repository.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.pfx
+*.p12
+*.db
+*.db-*
+*.sqlite
+*.sqlite-*
+*.sqlite3
+*.sqlite3-*
+*.log
+node_modules/
+.venv/
+__pycache__/
+local-state/
+workspaces/
+artifacts/
+secrets/
+credentials/
+.DS_Store
+Thumbs.db
