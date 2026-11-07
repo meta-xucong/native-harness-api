@@ -2,6 +2,8 @@
 
 404token 本地原生算力渠道适配项目。**当前分支推进 P1b 真实 Bridge/Sub2API 接缝，仍不是 WorkBuddy 上游或可部署模型服务。** 真实 Bridge HTTP 已联调；Sub2API 实际鉴权中间件/handler HTTP 链通过，但数据库迁移及真实 PostgreSQL 路由持久性未验收，执行端仍为明确标注的 FakeHarness。
 
+另新增独立的 **WorkBuddy bundled-runtime 本机一次性真实试验程序**，供用户显式选择已安装的官方软件，在本机确认一次 prompt。它不放开上述正式模型渠道，不提取登录凭据，不以 mock 测试声称真实账号已验收。参见 [试验指南](code/docs/WORKBUDDY_LOCAL_TRIAL.md)、[Windows 打包说明](code/packaging/README.zh-CN.md) 和 [P2 边界](blueprint/P2-LOCAL-TRIAL-ADDENDUM.md)。
+
 - [审定蓝图 v0.2](blueprint/BLUEPRINT-v0.2.md)：目标、模型绑定、能力边界与分阶段门槛。
 - [独立设计复核](blueprint/DESIGN-AUDIT-v0.2.md)：允许开始离线实现，不是代码认证。
 - [P1b 切片与合同补充](blueprint/P1B-ADDENDUM.md)：独立三仓分支、专用路由与未过门禁。

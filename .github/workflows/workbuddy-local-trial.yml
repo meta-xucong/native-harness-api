@@ -1,0 +1,69 @@
+name: WorkBuddy local trial kit (no real inference)
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  offline-contracts:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    env:
+      PYTHONPATH: code/src
+      SOURCE_REVISION: ${{ github.event.pull_request.head.sha || github.sha }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30af803
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.13.17'
+      - name: All offline unit and synthetic stdio subprocess tests
+        working-directory: code
+        env:
+          PYTHONPATH: src
+        run: python -m unittest discover -s tests -v
+      - name: Compile and whitespace checks
+        run: |
+          python -m compileall -q code/src code/tests code/packaging
+          git diff --check
+      - name: Download pinned official private Python runtime
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          python -c "import urllib.request; urllib.request.urlretrieve('https://www.python.org/ftp/python/3.13.17/python-3.13.17-embed-amd64.zip', 'python-runtime.zip')"
+      - name: Build allowlisted test kit, verify runtime SHA and preserve license
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          python code/packaging/build.py --runtime-zip python-runtime.zip --source-revision $env:SOURCE_REVISION --output workbuddy-probe-windows-x64.zip
+          (Get-FileHash workbuddy-probe-windows-x64.zip -Algorithm SHA256).Hash.ToLower() | Out-File -Encoding ascii workbuddy-probe-windows-x64.zip.sha256
+      - name: Private interpreter smoke test in Unicode and spaced path, no native launch
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $env:KIT_DIR = Join-Path $env:RUNNER_TEMP 'Native Harness 试验'
+          python -c "import os,zipfile; zipfile.ZipFile('workbuddy-probe-windows-x64.zip').extractall(os.environ['KIT_DIR'])"
+          & "$env:KIT_DIR/runtime/python.exe" -I -B "$env:KIT_DIR/launcher.py" --help
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & "$env:KIT_DIR/Probe.cmd" --help
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & "$env:KIT_DIR/runtime/python.exe" -I -B -c "import sqlite3,hashlib,json,subprocess,threading; print('PRIVATE_STDLIB_OK')"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Upload test kit for review, not a production release
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: workbuddy-local-trial-${{ env.SOURCE_REVISION }}
+          path: |
+            workbuddy-probe-windows-x64.zip
+            workbuddy-probe-windows-x64.zip.sha256
+          retention-days: 14
+          if-no-files-found: error

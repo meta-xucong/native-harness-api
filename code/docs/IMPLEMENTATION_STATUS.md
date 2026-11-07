@@ -1,5 +1,7 @@
 # P1b 实现状态
 
+新增 P2 独立 WorkBuddy bundled-runtime 本机试验程序见 [本机试验指南](WORKBUDDY_LOCAL_TRIAL.md)。它支持用户本地显式确认一次原生 ACP prompt，但不改下列 P1b 正式渠道门禁，真实账号/模型尚未运行；源码和发行包另行审计，不能用旧 P1b 审计覆盖。
+
 审定蓝图 v0.2 保持原 SHA256 `3ef768759f4e7b7f786d9badf721f42fb661e5e7d728ab724daf118577df7f08`；本阶段差异见 [P1b 补充](../../blueprint/P1B-ADDENDUM.md)。旧 P1a 审计只对应 commit `5f1bfd6611a3d3ebe0f6dbb2f2c56ee303931deb`，不批准当前新增代码。
 
 | 项目 | 当前状态 |
