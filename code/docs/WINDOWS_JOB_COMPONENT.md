@@ -25,8 +25,11 @@ verification; neither is a claim made by this primitive.
 `host_exited()` consults the retained process HANDLE, not a PID.
 `exit_code()` returns its exit code, or None while running; call before close.
 `active_processes()` queries the retained Job HANDLE.
-`wait_empty(timeout)` observes without killing.
-`terminate(timeout)` terminates the job and observes emptiness.
+`wait_empty(timeout)` observes without killing and succeeds only after both Job
+ActiveProcesses is zero and the retained host HANDLE is signalled.
+`terminate(timeout)` terminates the job and waits for both facts within the same
+deadline. Timeout returns false; query/wait failures raise without discarding
+ownership handles. Job accounting zero alone is not sufficient convergence.
 `close(timeout)` also cleans owned pipe/thread/process/job handles, but only
 after the applicable termination confirmation. Cleanup errors retain ownership
 for retry and raise `WindowsJobError`, rather than returning success. If spawn
@@ -65,9 +68,16 @@ handle lists, and the Job/process/thread handles themselves are non-inheritable.
 
 `PYTHONPATH=src python -m unittest discover -s tests -p test_windows_job.py -v`
 
-On the current Linux development host: **2 portable tests PASS, 18 Windows tests
-SKIPPED**. This is NOT Win32 runtime validation. No Windows host, vendor binary,
-user account, paid inference, or production deployment was used.
+First actual Windows CI gate at commit `805726`, run `42403312420`, job
+`128495573830`: **20 tests, 17 PASS / 2 FAIL / 1 non-Windows guard SKIP**.
+The two failures observed Job accounting reaching zero before the retained host
+HANDLE was signalled. The vendor smoke step was consequently skipped.
+
+This patch requires both observations before success. Its exact commit still
+requires a fresh Windows run; the patch is not claimed Windows-passing.
+Current Linux checks: **6 portable tests PASS, 18 Windows tests SKIPPED**.
+Four portable fake-API tests validate the waiting algorithm only, not Win32
+execution. No user account, paid inference, or production deployment was used.
 
 Windows-only tests use local Python synthetic children/grandchildren and cover:
 

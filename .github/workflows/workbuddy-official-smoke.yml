@@ -3,6 +3,8 @@ on:
   push:
     paths:
       - 'code/tools/official_workbuddy_smoke.py'
+      - 'code/src/native_harness_api/windows_job.py'
+      - 'code/tests/test_windows_job.py'
       - '.github/workflows/workbuddy-official-smoke.yml'
 permissions:
   contents: read

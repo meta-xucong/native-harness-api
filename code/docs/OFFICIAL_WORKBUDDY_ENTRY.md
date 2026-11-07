@@ -26,7 +26,7 @@
 
 ## 专用 Windows CI 的允许范围
 
-工作流 `Official WorkBuddy no-account entry smoke` 只在自身或探测工具变化的 push 上运行。它使用临时 Windows runner、已有 7-Zip，不安装 WorkBuddy；校验 installer/载荷/入口摘要后解压固定载荷，不执行 NSIS。
+工作流 `Official WorkBuddy no-account entry smoke` 只在自身、探测工具或 owned Job 组件/专项测试变化的 push 上运行。它先通过真实 Windows Job 合成测试，再使用临时 Windows runner、已有 7-Zip，不安装 WorkBuddy；校验 installer/载荷/入口摘要后解压固定载荷，不执行 NSIS。
 
 每个进程通过 [owned Job 组件](WINDOWS_JOB_COMPONENT.md) 创建和回收。使用全新临时配置目录及环境 allowlist，不传 GitHub token、代理、原生账号、用户配置或 API Key。环境重定向不是 OS sandbox，KnownFolder API 可能忽略它；真正边界是没有用户登录态的独立一次性 runner。
 

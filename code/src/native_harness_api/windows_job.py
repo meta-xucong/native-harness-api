@@ -315,30 +315,35 @@ class OwnedWindowsJob:
             info = _Accounting()
             self._check(self._api.QueryInformationJobObject(self._job, 1, C.byref(info), C.sizeof(info), None), 'JOB_QUERY_FAILED')
             count = int(info.ActiveProcesses)
-            if self._assigned and count == 0:
-                self._empty_observed = True
             return count
 
     def wait_empty(self, timeout=5):
         timeout = _timeout(timeout)
         deadline = time.monotonic() + timeout
         with self._state_lock:
-            while self.active_processes() != 0:
+            while True:
+                # Job accounting can reach zero before the retained host HANDLE
+                # becomes signalled. Require both facts before reporting success.
+                empty = self.active_processes() == 0
+                if empty and self.host_exited():
+                    if self._assigned:
+                        self._empty_observed = True
+                    return {'owned_job_empty':True}
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     return {'owned_job_empty':False}
                 time.sleep(min(.02, remaining))
-            return {'owned_job_empty':True}
 
     def terminate(self, timeout=5):
         timeout = _timeout(timeout)
+        deadline = time.monotonic() + timeout
         with self._state_lock:
             if self._closed:
                 return {'owned_job_empty':self._empty_observed}
             if not self._job:
                 raise WindowsJobError('JOB_NOT_CREATED')
             self._check(self._api.TerminateJobObject(self._job, 1), 'JOB_TERMINATE_FAILED')
-            return self.wait_empty(timeout)
+            return self.wait_empty(max(0, deadline-time.monotonic()))
 
     def close(self, timeout=5):
         timeout = _timeout(timeout)

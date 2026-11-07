@@ -9,6 +9,8 @@ import os
 from pathlib import Path
 import sys
 import tempfile
+import threading
+from unittest.mock import patch
 import time
 import unittest
 from native_harness_api.windows_job import OwnedWindowsJob, WindowsJobError, UnsupportedPlatform, _timeout
@@ -27,6 +29,74 @@ class PortableJobTests(unittest.TestCase):
         for value in (True, -1, 301, float('nan'), float('inf'), '1'):
             with self.assertRaises(ValueError):_timeout(value)
         self.assertEqual(_timeout(0), 0)
+
+
+class PortableWaitAlgorithmTests(unittest.TestCase):
+    """Fake API algorithm contracts only; never evidence of Win32 execution."""
+    def owner(self, statuses, counts=(0,), *, query_failure=False):
+        from native_harness_api.windows_job import _Accounting
+        owner = object.__new__(OwnedWindowsJob)
+        owner._state_lock = threading.RLock()
+        owner._closed = owner._empty_observed = False
+        owner._assigned = True
+        owner._job, owner._process = 101, 202
+        owner._error = lambda code: WindowsJobError(code, owner=owner)
+        class API:
+            waits = 0
+            queries = 0
+            def TerminateJobObject(self, handle, code):
+                return 1
+            def QueryInformationJobObject(self, handle, kind, info, size, returned):
+                if query_failure:
+                    return 0
+                count = counts[min(self.queries, len(counts)-1)]
+                self.queries += 1
+                ctypes.cast(info, ctypes.POINTER(_Accounting)).contents.ActiveProcesses = count
+                return 1
+            def WaitForSingleObject(self, handle, milliseconds):
+                status = statuses[min(self.waits, len(statuses)-1)]
+                self.waits += 1
+                return status
+        owner._api = API()
+        return owner
+
+    def clock(self):
+        now = [0.0]
+        def sleep(seconds):
+            now[0] += seconds
+        return now, sleep
+
+    def test_accounting_zero_waits_for_retained_host_signal(self):
+        owner = self.owner((258, 258, 0))
+        now, sleep = self.clock()
+        with patch('native_harness_api.windows_job.time.monotonic', side_effect=lambda: now[0]), patch('native_harness_api.windows_job.time.sleep', side_effect=sleep):
+            self.assertEqual(owner.terminate(.1), {'owned_job_empty': True})
+        self.assertEqual(owner._api.waits, 3)
+        self.assertGreater(now[0], 0)
+        self.assertTrue(owner.host_exited())
+        self.assertTrue(owner._empty_observed)
+
+    def test_unsignalled_host_times_out_retaining_ownership(self):
+        owner = self.owner((258,))
+        now, sleep = self.clock()
+        with patch('native_harness_api.windows_job.time.monotonic', side_effect=lambda: now[0]), patch('native_harness_api.windows_job.time.sleep', side_effect=sleep):
+            self.assertEqual(owner.terminate(.05), {'owned_job_empty': False})
+        self.assertAlmostEqual(now[0], .05)
+        self.assertFalse(owner._empty_observed)
+        self.assertEqual((owner._job, owner._process), (101, 202))
+        self.assertFalse(owner._closed)
+
+    def test_query_or_wait_failure_is_not_empty_success(self):
+        for owner in (self.owner((0,), query_failure=True), self.owner((0xFFFFFFFF,))):
+            with self.assertRaises(WindowsJobError):
+                owner.terminate(0)
+            self.assertFalse(owner._empty_observed)
+            self.assertEqual((owner._job, owner._process), (101, 202))
+
+    def test_host_signal_alone_does_not_prove_job_empty(self):
+        owner = self.owner((0,), counts=(1,))
+        self.assertEqual(owner.terminate(0), {'owned_job_empty': False})
+        self.assertFalse(owner._empty_observed)
 
 
 @unittest.skipUnless(os.name == 'nt', 'Requires real Windows Job Object APIs; NOT VERIFIED on this host')
