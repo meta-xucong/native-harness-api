@@ -1,42 +1,28 @@
-# P1a 实现状态
+# P1b 实现状态
 
-基线：审定 v0.2 SHA256 `3ef768759f4e7b7f786d9badf721f42fb661e5e7d728ab724daf118577df7f08`。
+审定蓝图 v0.2 保持原 SHA256 `3ef768759f4e7b7f786d9badf721f42fb661e5e7d728ab724daf118577df7f08`；本阶段差异见 [P1b 补充](../../blueprint/P1B-ADDENDUM.md)。旧 P1a 审计只对应 commit `5f1bfd6611a3d3ebe0f6dbb2f2c56ee303931deb`，不批准当前新增代码。
 
-## 已实现的范围
-
-| 项目 | 状态 |
+| 项目 | 当前状态 |
 | --- | --- |
-| Python stdlib 合同、严格输入、拒答/未知 usage、稳定响应 | IMPLEMENTED |
-| 鉴权 Facade、受控可信身份、回放先于新准入 | IMPLEMENTED_FOR_P1A |
-| 真实 HTTP Bridge/Node 客户端、能力门、响应绑定验证 | IMPLEMENTED_FOR_PROPOSED_CONTRACT |
-| Node 受信策略、完整 offer 执行前校验；SQLite journal、跨进程锁、一次性 intent、只读恢复 | IMPLEMENTED_FOR_P1A |
-| 合成 FakeHarness 及持久启动计数 | IMPLEMENTED_SYNTHETIC_ONLY |
-| 测试假网关操作/路由冻结、测试假账本 | TEST_FIXTURE_ONLY |
-| 真实 Bridge 原仓库文本 schema/结果/活性扩展 | NOT_IMPLEMENTED |
-| 真实 Sub2API 身份/重试/操作绑定/Go 接缝 | NOT_IMPLEMENTED |
-| WorkBuddy 官方入口、模型回读、真实模型执行 | NOT_IMPLEMENTED / NOT_RUN |
-| Windows 生命周期、真实审批/取消、supervisor 围栏恢复 | NOT_RUN / NOT_IMPLEMENTED |
-| 备份/恢复代际、数据库回滚、跨机器协调 | NOT_IMPLEMENTED |
-| 生产用户权限、隔离、泄密防护、TLS 终止、部署运维 | NOT_VERIFIED |
-| token 计量、钱包扣费、超时后账务对账 | NOT_IMPLEMENTED |
-| 流式、tool_calls、多模态、长期会话 | NOT_IMPLEMENTED |
+| 严格文本 CC、拒答、未知 usage、受信 NodePolicy、journal/单槽/intent | IMPLEMENTED_SYNTHETIC_ONLY |
+| Facade/Node 可运行配置与 heartbeat、冻结 source/ledger 校验 | IMPLEMENTED_FOR_P1B |
+| 真实 Bridge 同 tasks/attempts/claims typed 扩展及 HTTP | IMPLEMENTED_ON_SEPARATE_BRANCH / SOCKET_TESTED |
+| 真实 Sub2API APIKey middleware/专用 handler/单次 HTTP 出站 | IMPLEMENTED_ON_SEPARATE_BRANCH / HTTP_TESTED_WITH_EXPLICIT_REPOSITORY_FIXTURES |
+| Sub2API PostgreSQL migration/持久唯一操作路由 | IMPLEMENTED / REAL_DATABASE_NOT_RUN |
+| 完整持久三仓闭环 | BLOCKED_ON_AUTHORIZED_DATABASE_TEST_ENVIRONMENT |
+| 普通 `/v1/chat/completions` account-channel 接入 | NOT_IMPLEMENTED（当前仅专用 native 路径） |
+| WorkBuddy 官方入口、选模/readback、真实模型任务 | NOT_IMPLEMENTED / NOT_RUN |
+| Windows、真实审批/取消/后台子进程停机证明 | NOT_RUN |
+| 备份回滚/恢复代际、跨机器围栏、强制释放 | NOT_IMPLEMENTED |
+| 生产权限/隔离、TLS 终止、运维部署、商业授权 | NOT_VERIFIED |
+| 收费、SSE、tool_calls、多模态、长期会话 | NOT_IMPLEMENTED |
 
-P1a 的独立路径可运行，不等于满足整个 v0.2 矩阵。真实取消/start 竞争、租约抢占、磁盘满/损坏恢复、账本旧快照、原有 Bridge 图片及 Sub2API 正常渠道回归都未运行，不能借测试夹具宣称通过。
+## 已证明与没有证明
 
-## 本次测试
+真实 Bridge HTTP 故障测试不依赖 P1a 假账本。它证明合成执行时的任务/结果/恢复接缝，不能证明 WorkBuddy 进程或工具已停止。Sub2API 真实中间件/handler HTTP 测试仍明确注入认证 repository 与路由 store 替身；它不证明实际 PostgreSQL 并发、迁移或恢复。
 
-最终命令、计数与指纹见 [TEST_REPORT.md](TEST_REPORT.md)。所有 HTTP 都指向进程内创建的 loopback 测试服务；模型执行为 FakeHarness。
+真实数据库阶段因当前环境与授权约束停下，未使用其他数据库路径替代验收。Node 未决 journal 和 Bridge 墓碑不得删除重建来“修复”。未知活性保持隔离，没有人工强制清空接口。
 
-Node 实际跨进程测试包括：旧消费者停在 intent 后、adapter 调用前；第二消费者不能取得 OS 锁；终止旧消费者后 durable intent 仍阻止再次执行。测试不证明真实 WorkBuddy/子进程已停止。没有生产围栏时，不提供解除未知槽的按钮。
+## 审计与发布
 
-## 不可绕过的后续门槛
-
-1. Bridge 和 Sub2API 必须在各自仓库做小范围独立兼容改造与旧功能回归。当前未动两仓源码。
-2. ModelBinding 需从用户实际软件的受支持入口得出，不能使用本 fake 模型证据代替。
-3. 只有实际可用、授权、模型固定与终态恢复验证完成，才能进入 P2/P3。当前真实测试/收费/部署均未发生。
-4. 多租户或收费分别需要 v0.2 对应隔离/授权/账务门禁。P1a loopback server 禁止改 bind 后就当生产服务。
-5. 未决 journal/账本不能删除重建来“修复”。旧实例的消费者没有被可靠围栏时，不得释放原槽或重跑原操作。
-
-## 发布与审计
-
-独立代码审计首轮提出 Node 执行前校验、HTTP framing、Facade map key/alias 三项实证，已修复并通过复审，结论为 [PASS_FOR_EXPLICIT_P1A_PROTOTYPE_PUBLICATION](CODE_AUDIT_FINAL.md)。允许明确标注的 P1a 源码发布，不批准部署或合并。远程提交与 draft PR 由发布步骤单独验证。设计审计是 blueprint/ 中的历史阶段证据，不覆盖后来代码。最终 GitHub 发布须核对实际远端提交后另报。
+当前 P1b 已独立复审，结论为 [PASS_FOR_SCOPED_DEVELOPMENT_BRANCH](P1B_AUDIT_FINAL.md)，仅允许默认关闭的 synthetic 开发分支，不批准完整持久验收、合并或部署。每仓独立分支；发布步骤须另行核对远端 SHA 和 CI。测试计数和命令见 [P1b 报告](P1B_TEST_REPORT.md)，不得用过去通过数字冒充当前结果。

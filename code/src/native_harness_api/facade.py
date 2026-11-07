@@ -18,8 +18,8 @@ class Service:
 
 class Facade:
     def __init__(self, services, *, wait_seconds=0.2, poll_seconds=0.01, mode="disabled"):
-        if mode != "offline_prototype":
-            raise ValueError("Only explicit offline_prototype mode is implemented; production is disabled")
+        if mode not in {"offline_prototype", "p1b_integration"}:
+            raise ValueError("Explicit synthetic test mode required; production is disabled")
         if not services or not 0 <= wait_seconds <= 30 or not 0.001 <= poll_seconds <= 1:
             raise ValueError("Invalid facade configuration")
         for token, service in services.items():
@@ -27,6 +27,7 @@ class Facade:
                 raise ValueError("Explicit service credentials required")
             self.validated_bindings(service)
         self.services = dict(services)
+        self.mode = mode
         self.wait_seconds, self.poll_seconds = wait_seconds, poll_seconds
 
     @staticmethod
@@ -39,7 +40,7 @@ class Facade:
             if (not isinstance(alias, str) or not isinstance(binding, Binding)
                     or alias != binding.model_alias or not alias.startswith("synthetic-")
                     or not binding.native_model.startswith("fake-")):
-                raise ValueError("P1a requires matching, explicitly synthetic binding keys and aliases")
+                raise ValueError("Tests require matching, explicitly synthetic binding keys and aliases")
         return values
 
     def authenticate(self, headers):
@@ -57,9 +58,14 @@ class Facade:
             raise ChannelError("INVALID_SERVICE_CONFIGURATION", 503) from None
         if method == "GET" and path == "/v1/models":
             models = sorted(bindings) if service.accepting_new else []
-            return 200, {"object": "list", "data": [{"id": m, "object": "model", "owned_by": "p1a-synthetic"} for m in models]}, {}
+            owner = "p1a-synthetic" if self.mode == "offline_prototype" else "p1b-synthetic"
+            return 200, {"object": "list", "data": [{"id": m, "object": "model", "owned_by": owner} for m in models]}, {}
         if method != "POST" or path != "/v1/chat/completions":
             raise ChannelError("NOT_FOUND", 404)
+        if self.mode == "p1b_integration":
+            if (single_header(headers, "X-Native-Source") != service.source
+                    or single_header(headers, "X-Native-Ledger") != service.bridge.ledger_instance):
+                raise ChannelError("FROZEN_ROUTE_MISMATCH", 409, accepted=False)
         identity = Identity(service.source, single_header(headers, "X-Native-Tenant"),
                             single_header(headers, "X-Native-Principal"), single_header(headers, "X-Native-Operation"))
         admission = single_header(headers, "X-Native-Admission-Allowed")

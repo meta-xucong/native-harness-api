@@ -1,58 +1,69 @@
-# P1a 离线原型
+# Native Harness P1b 接缝代码
 
-**可运行的协议/恢复原型，不是可部署模型服务。** Python 3.12+，运行和测试仅用标准库，不需 pip 安装。当前只运行合成 FakeHarness，不读取原生账号、登录态或生产账本。
+**当前是单用户、单 Key、单槽、合成执行的集成试验，不是 WorkBuddy 上游，也不是生产模型服务。** Python 3.12+，本仓运行组件只依赖标准库；真实 Bridge 测试另需其仓库锁定的依赖。不会读取原生账号或生产账本。
 
-## 运行
+## 本仓测试与 P1a demo
 
-在 `code/` 目录：
+在 `code/` 中运行：
 
-```bash
+```sh
 PYTHONPATH=src python -m unittest discover -s tests -v
 PYTHONPATH=src:. python examples/offline_demo.py
-PYTHONPATH=src python -m compileall -q src tests examples
+PYTHONPATH=src python -m compileall -q src tests examples integration
 ```
 
-PowerShell：
+`offline_demo.py` 仍有意使用假网关/假账本，输出真实集成 false。它不是 P1b 验收。历史 [P1a 报告](docs/TEST_REPORT.md) 和 [独立 P1a 审计](docs/CODE_AUDIT_FINAL.md) 只对应旧提交，不覆盖新增源码。
 
-```powershell
-$env:PYTHONPATH="src;."
-python -m unittest discover -s tests -v
-python examples/offline_demo.py
+## 可运行的 Facade/Node
+
+`examples/p1b-config.example.json` 是默认不准入的配置样例。复制到工作目录，指定新的专用绝对 `data_dir`，与真实 Bridge/Sub2API 配置保持相同 source、ledger、owner 和完整 binding；测试准入需明确设置 `accepting_new: true`。`mode` 必须为 `p1b_integration`，`adapter` 必须为 `fake`，不允许将真实模型名填给 FakeHarness。
+
+凭据只从配置指定的环境变量读取：`NATIVE_BRIDGE_SOURCE_TOKEN`、`NATIVE_BRIDGE_NODE_TOKEN`、`NATIVE_FACADE_TOKEN`。它们应由操作者在隔离测试环境提供，与另两仓配置一致，不写进 JSON/仓库。程序不生成或保存服务凭据。
+
+分别运行：
+
+```sh
+PYTHONPATH=src python -m native_harness_api.runtime facade --config /path/to/test-config.json
+PYTHONPATH=src python -m native_harness_api.runtime node --config /path/to/test-config.json
+# 仅一次 heartbeat/恢复/poll，可用于诊断，不保证有任务：
+PYTHONPATH=src python -m native_harness_api.runtime node --config /path/to/test-config.json --once
 ```
 
-Windows 命令是使用方式，**本轮没有在 Windows 实机验收**。
+Facade 只监听 `127.0.0.1`，Node 经 HTTP 连接真实 Bridge typed 扩展。Bridge 必须为专用 Harness 实例/账本/执行资源，不支持与旧 image runner 混跑，也不声称多个实例能协调同一机器/工具的槽。心跳必须先到，Bridge 才准入新任务。网络/配置异常时 CLI 保守停止，没有自动换账本、换任务或本地 fallback。重新启动必须保留同一 journal；不删未决数据来解锁。只有明确 `offline_prototype` 或 `p1b_integration` 可启动，生产模式仍拒绝。
 
-Demo 建立临时测试数据库并起三个 loopback HTTP 服务：假网关、Facade、假账本。客户端首次 POST 得到真实等待超时；Node 执行一次 FakeHarness；同键 POST 取回结果，再次同键回放完全一致。输出明确包含 `all_execution_synthetic=true`、两个真实集成标记 false、`native_starts=1`。退出后清理临时目录。
+Sub2API 专用入口是 `POST /v1/native-harness/chat/completions`，不是普通账号渠道 `/v1/chat/completions`。真实认证后它产生内部身份及冻结路由头，客户端自填 `X-Native-*` 不可信。详见 [P1b 补充](../blueprint/P1B-ADDENDUM.md)。
 
-## 已实现
+## 真实 Bridge socket 测试
 
-- 严格文本 CC 子集、受鉴权 models、明确错误码。`user` 不是身份；system/developer/tools/采样/多模态/stream 直接拒绝。
-- 不持久化任务的 Facade，经真实 HTTP 调用固定 Bridge origin；有限超时/响应大小、核对单一 Content-Length 与实际字节、禁重定向/环境代理、外部明文禁止。P1a 暂拒绝 chunked 和 close-delimited 响应。
-- Bridge 客户端使用已有任务路径及明确的待实现 harness 扩展；实际 Bridge main 缺少能力握手时 fail closed。
-- Node 必填受信 `NodePolicy`（source、ledger 实例、租户/主体白名单、完整允许绑定）；offer ID/完整 envelope/请求摘要/消息/模型绑定在 claim 前严格验证。SQLite 证据、跨进程单槽 OS 锁、一次性 launch intent、只读恢复、结果重传；没有任务重跑/强制清空按钮。
-- 合成 FakeHarness 的持久启动计数、延迟、审批、观察中断、失败、模型错配、空结果、未知活性。
-- 测试假网关的 SQLite 唯一操作绑定：先冻结原始请求摘要与目标快照，后出站；同键在未准入和渠道变更后不换路由，未知接收仍检查新的执行权限。
+使用 Bridge 的 `work/native-harness-p1b` 实现分支和它声明的运行/测试依赖。设 `BRIDGE_SRC` 为其 `src` 目录，`BRIDGE_PYTHON` 为有依赖的 Python：
 
-`src/` 不导入 `tests/fakes/`。没有可选择 fake 作为生产 fallback 的配置。Facade 仅允许显式 `offline_prototype` 模式且只列 synthetic 模型；默认拒绝启动。HTTP server 只绑定 127.0.0.1，不是生产 web server。
+```sh
+PYTHONPATH="src:$BRIDGE_SRC" "$BRIDGE_PYTHON" -m unittest discover -s integration -p test_real_bridge.py -v
+```
 
-## 关键恢复行为
+这条测试启动真实 Bridge FastAPI/BridgeStore、真实 Facade/Node HTTP 客户端和临时 SQLite 账本；执行器是 FakeHarness。没有导入 `tests/fakes`。覆盖真实成功/回放、冲突、失联 ACK、未知活性、迟到启动、重建 journal、过期墓碑。
 
-- 观察异常：pending + unknown，不封死稍后找回的成功结果。
-- 已有最终回答但活性 unknown：允许回放真实结果，继续占槽。
-- grant 响应丢失或 intent 后崩溃：不再次 start/spawn。找不到可靠原生证据时持续隔离。
-- 暂停在 spawn 前的旧消费者持有整个启动临界区的 OS 锁；第二消费者不能释放或抢占它。旧进程退出后 intent 仍阻止重启执行。
-- upload/ACK 丢失：只重传持久结果。客户端断开不取消任务。
+## 三仓 HTTP 链测试及持久性边界
 
-当前没有经过验证的 supervisor、持久撤销代际或人工解除隔离流程，所以未知槽可能永久阻塞。这是明确的可用性限制，不是自动“修复”旧任务的理由。多个机器/多个 state 目录不由本地锁协调，禁止这样部署。
+使用 Sub2API `work/native-harness-p1b` 实现分支、Go 1.27.2，并预先准备其正常依赖/缓存：
 
-## 限制和后续
+```sh
+PYTHONPATH="src:$BRIDGE_SRC" "$BRIDGE_PYTHON" integration/run_sub2api_chain.py \
+  --sub2api-backend /path/to/sub2api/backend --go /path/to/go/bin/go
+```
 
-详见 [实现状态](docs/IMPLEMENTATION_STATUS.md) 与 [限定 P1a 发布的独立复核](docs/CODE_AUDIT_FINAL.md)。**未实现**真实 Bridge schema 扩展、真实 Sub2API 插件/Go 接缝、WorkBuddy 选择/回读/终态、真实工具审批/取消、生产权限与租户隔离、收费、SSE、多模态、外部 function calling。
+测试使用真实 Sub2API APIKeyService/中间件/handler → HTTP Facade → HTTP Bridge → Node/FakeHarness，检查恰一次合成启动和同结果回放。**API Key repository 查找与 operation route store 仍是测试替身。** 输出明确 `postgresql_verified=false`。脚本主动移除 DSN 环境变量，不会碰任何数据库服务。
 
-测试假账本不是“复用了 Bridge”；假用户 Key 不是“404token 真实 Key”。P1b 必须在各原仓库独立改造和回归，P2/P3 必须另做获准的真实环境验证。
+真实 PostgreSQL migration/100 并发唯一插入/新连接恢复测试在 Sub2API 仓单列，必须由操作者提供已授权可用的隔离数据库。当前环境该阶段受阻，未运行，不能将 SQL mock、Go build 或此 HTTP 链当作持久三仓闭环通过。
 
-## 稳定操作客户端
+## 不重复执行与剩余限制
 
-`examples/stable_operation_client.py` 演示将逻辑操作键保存到一个调用方指定文件，每次只发一个 HTTP 尝试，不自动重试。文件只含键，不保存 API Key 或正文。每个有意的新操作使用新文件；响应丢失后的观察/回放复用同文件。无键新 POST 没有跨请求去重保证。
+- Bridge 唯一任务权威；Facade 无队列；Node SQLite 只是恢复证据。
+- 旧 journal 的恢复/结果重传先于心跳和新能力检查；binding 下线不挡已接收操作恢复，但恢复阶段绝不 poll/claim/start 新任务。
+- claim/start 响应不明、intent 后崩溃、旧 worker 暂停均不是再启动依据。
+- 观察异常保持 pending/unknown；终态结果与活性分离。unknown 继续占槽，结果 ACK 丢失只重传。
+- P1b 额外核对冻结 source/ledger，凭据引用轮换不能静默更换账本。
+- 标准输出仅 text/refusal，未知 usage 省略。空结果、错模型不伪成功。
+- 没有真实 WorkBuddy 适配器、Windows 实机验收、生产隔离、supervisor 停机围栏恢复、账本回滚安全、计费、SSE、多模态或外部 tool_calls。
 
-该例子只允许 loopback 测试端点。测试凭证从 `NATIVE_TEST_USER_KEY` 读取；不得把真实密钥写进样例或仓库。
+完整状态见 [实现状态](docs/IMPLEMENTATION_STATUS.md) 和 [P1b 测试记录](docs/P1B_TEST_REPORT.md)。默认关闭、未知槽可能永久隔离，不合并、不部署、不付费推理。

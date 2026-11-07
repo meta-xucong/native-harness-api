@@ -302,7 +302,9 @@ class Runner:
         self.journal.save(record)  # Must succeed before any upload or slot reuse.
         return self._upload(record)
 
-    def run_once(self):
+    def run_once(self, *, allow_new=True):
+        if type(allow_new) is not bool:
+            raise ValueError('allow_new must be a boolean')
         with self.journal.locked():
             for record in self.journal.records():
                 frozen = record['task']
@@ -328,6 +330,8 @@ class Runner:
                     except Exception:
                         pass
                 return self._observe(record)
+            if not allow_new:
+                return {'outcome': 'idle'}
             offer = self.client.next_task()
             if offer is None:
                 return {'outcome': 'idle'}

@@ -145,6 +145,10 @@ class NodeClient:
     def __init__(self, base_url, token, **transport_options):
         self.http = HTTPTransport(base_url, token, **transport_options)
 
+    def heartbeat(self, state, binding_digests):
+        return self.http.request("POST", "/bridge/node/v1/harness-heartbeat",
+                                 {"state": state, "binding_digests": binding_digests})
+
     def next_task(self):
         value = self.http.request("GET", "/bridge/node/v1/tasks/next")
         if not isinstance(value, dict) or set(value) != {"task_id"}:

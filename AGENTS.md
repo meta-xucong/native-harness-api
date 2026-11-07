@@ -1,6 +1,6 @@
 # 开发代理与协作者约束
 
-本仓库当前为 P1a 离线原型。先读 README、blueprint/BLUEPRINT-v0.2.md、blueprint/DESIGN-AUDIT-v0.2.md、code/README.md、code/docs/HTTP_CONTRACT.md 和 code/docs/IMPLEMENTATION_STATUS.md。docs/ 与 audit/ 是 v0.1 历史快照，不覆盖审定 v0.2。代码与蓝图必须分放 code/、blueprint/。
+本分支当前为 P1b 接缝开发，真实 Bridge HTTP 可测试，Sub2API PostgreSQL 完整闭环未验收，模型执行仍仅 synthetic。先读 README、blueprint/BLUEPRINT-v0.2.md、blueprint/P1B-ADDENDUM.md、blueprint/DESIGN-AUDIT-v0.2.md、code/README.md、code/docs/HTTP_CONTRACT.md 和 code/docs/IMPLEMENTATION_STATUS.md。docs/ 与 audit/ 是 v0.1 历史快照，不覆盖审定 v0.2。代码与蓝图必须分放 code/、blueprint/。
 
 ## 不可变边界
 
