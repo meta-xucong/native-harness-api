@@ -5,6 +5,18 @@ Implementation: `tools/installed_workbuddy_smoke.py`. No existing product gate c
 Requires a separately approved operator run and exact fixed inventory; preparing this
 code is not authorization to execute it. Current tests use only offline fake owners.
 
+## Current result and authorization boundary
+
+The separately reviewed installed trial on source 64afcbe completed one help and one
+initialize. Help passed; initialize returned no protocol frame and exited 0 before
+controller termination. Owned cleanup completed. That local authorization is consumed;
+this design document does not authorize another run, fresh tag or account inspection.
+The historical development counts below are not the current CI totals. See the
+[actual follow-up and scope correction](WORKBUDDY_STARTUP_PROFILE.md) and PR #2.
+The assistant did not send session/new, model-selection or prompt requests. Vendor
+internal session creation was not verified or ruled out; installed 2.161 is not
+proven identical to the subsequently inspected cloud 2.165 source.
+
 ## Execution plan
 
 1. Operator uses a trusted, separately verified Python launcher and one fixed fresh
@@ -31,8 +43,9 @@ code is not authorization to execute it. Current tests use only offline fake own
    markers internally in bounded stdout/stderr, with complete readers and cleanup.
    Nonempty login/error text alone fails; raw help text is never returned.
 5. Only then launch the same EXE/entry + `--acp`. Send exactly one newline-delimited
-   initialize request. No responses to server RPCs, authentication, session creation,
-   model selection or prompt. Any extra frame, notification, malformed JSON,
+   initialize request. No responses to server RPCs, authenticate, session/new,
+   model-selection or prompt requests are sent. This request boundary does not prove
+   absence of vendor-internal session creation or other side effects. Any extra frame, notification, malformed JSON,
    duplicate field, residual bytes, missing response or nonzero natural exit fails.
    The complete stdout lifecycle, including cleanup drain, is validated.
 6. Each phase has a 45-second observation deadline. A successful initialize response
