@@ -1,6 +1,6 @@
 # 开发代理与协作者约束
 
-本仓库当前仅有蓝图。阅读 README、docs/BLUEPRINT.md、docs/CONTRACTS.md、docs/REUSE_AND_INTEGRATION.md、docs/DEVELOPMENT_AND_ACCEPTANCE.md、docs/AUDIT.md 后再开展用户明确授权的开发。
+本仓库当前为 P1a 离线原型。先读 README、blueprint/BLUEPRINT-v0.2.md、blueprint/DESIGN-AUDIT-v0.2.md、code/README.md、code/docs/HTTP_CONTRACT.md 和 code/docs/IMPLEMENTATION_STATUS.md。docs/ 与 audit/ 是 v0.1 历史快照，不覆盖审定 v0.2。代码与蓝图必须分放 code/、blueprint/。
 
 ## 不可变边界
 
@@ -17,7 +17,7 @@
 
 先固定三仓库实际提交，与蓝图快照做差异审计。只改最小必要接缝，保留已有未提交工作；禁止 reset/clean 原项目，禁止读写生产账本。蓝图没有宣称存在的 API 字段不得凭空配置。
 
-本仓库后续放薄 Facade/本地 Adapter；Bridge 和 Sub2API 的必要改动进入各自独立 PR，默认关闭。不要为了接入重构全平台调度、权限、计费和供应商策略。
+本仓库放薄 Facade/本地 Adapter；测试假网关/假账本只在 code/tests/fakes/，不能成为生产 fallback。P1a 不声称真实 Bridge/Sub2API/WorkBuddy 已接通。Bridge 和 Sub2API 的必要改动进入各自独立 PR，默认关闭。不要为了接入重构全平台调度、权限、计费和供应商策略。
 
 许可证未核定的外部代码只参考不复制；引用来源固定版本并保留版权/NOTICE。使用官方软件或开源 SDK 不等于获准多用户商业转供。
 
@@ -30,3 +30,12 @@
 每次报告分开列出：改动、运行过的命令/测试及实际结果、仍未验证的项目、是否有真实模型费用、是否有部署。没有测试就写 NOT_RUN，不能借用历史通过数字。
 
 修改协议要同步蓝图、合同、验收和审计，保持链接有效。只更新任务相关文档/代码；不要把本机路径、登录信息、令牌、聊天记录或客户数据写入仓库。
+
+## P1a 专项约束
+
+- 模型身份必须来自可核实原生配置/运行证据；FakeHarness 只用明确 synthetic/fake 名称。
+- 观察错误保持 pending/unknown，不提前写不可变 failed。结果终态与执行活性分别处理。
+- intent 后旧 worker 可能迟到启动；不能仅凭无进程/旧 epoch/租约超时释放槽。当前无强制释放入口，保守隔离未知槽。
+- 同键在首次未准入、渠道变更和重启后仍冻结原路由；再次准入仍检查当前执行权限。
+- 标准 API 语义与原生 Agent 能力分开，未知用量不填零。
+- 最终提交前跑 code/ 的实际测试及离线 demo；文档抽象脚本通过不能代替它们。
