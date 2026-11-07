@@ -283,6 +283,247 @@ class OfflineTests(unittest.TestCase):
                 with self.assertRaisesRegex(SmokeError, expected):
                     observe(Owner(), 'help', .5, capture=capture)
 
+    def log_fixture(self, root, date='2026-11-08'):
+        private, cwd = root / 'initialize', root / 'initialize/workspace'
+        cwd.mkdir(parents=True)
+        directory = private / 'CODEBUDDY_CONFIG_DIR/logs' / date
+        directory.mkdir(parents=True)
+        suffix = hashlib.md5(str(cwd).encode(), usedforsecurity=False).hexdigest()
+        path = directory / ('workspace__' + suffix + '.log')
+        return private, cwd, path
+
+    def test_log_scope_and_redaction(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            private, cwd, path = self.log_fixture(Path(tmp))
+            path.write_bytes(b'TOKEN private-path event_loop_drain MODULE_NOT_FOUND')
+            auth = private / 'CODEBUDDY_CONFIG_DIR/auth'
+            auth.mkdir()
+            (auth / 'account.info').write_text('MUST_NOT_READ')
+            other_date = path.parent.parent / '2026-11-07'
+            other_date.mkdir()
+            (other_date / path.name).write_text('MUST_NOT_READ')
+            original_open = smoke.os.open
+            opened = []
+            def guarded_open(p, *args):
+                opened.append(Path(p))
+                self.assertEqual(Path(p), path)
+                return original_open(p, *args)
+            with patch.object(smoke.os, 'open', side_effect=guarded_open):
+                report = smoke.classify_logs(private, cwd, {'2026-11-08'})
+            self.assertEqual(opened, [path])
+            self.assertEqual(report['observed_categories']['event_loop_drain'], 1)
+            self.assertEqual(len(report['files']), 1)
+            for secret in ('TOKEN', 'private-path', 'workspace__', str(private)):
+                self.assertNotIn(secret, json.dumps(report))
+
+    def test_log_links_and_oversize_rejected(self):
+        for kind in ('hardlink', 'oversize'):
+            with tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                private, cwd, path = self.log_fixture(root)
+                external = root / 'outside'
+                external.write_text('DO_NOT_READ')
+                if kind == 'hardlink':
+                    os.link(external, path)
+                else:
+                    path.write_bytes(b'x' * (512 * 1024 + 1))
+                with patch.object(smoke.os, 'open', side_effect=AssertionError('Must reject before read')):
+                    report = smoke.classify_logs(private, cwd, {'2026-11-08'})
+                self.assertEqual(len(report['files']), 0)
+                self.assertIn(report['status'], ('unsafe_or_unreadable', 'read_limit'))
+
+    def test_log_symlink_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            private, cwd, path = self.log_fixture(Path(tmp))
+            external = Path(tmp) / 'outside'
+            external.write_text('DO_NOT_READ')
+            try:
+                path.symlink_to(external)
+            except OSError:
+                self.skipTest('Symlink creation unavailable; no privilege escalation')
+            with patch.object(smoke.os, 'open', side_effect=AssertionError('No read')):
+                report = smoke.classify_logs(private, cwd, {'2026-11-08'})
+            self.assertEqual(report['status'], 'unsafe_or_unreadable')
+
+    def test_final_handle_target_rejected_before_read(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            private, cwd, path = self.log_fixture(Path(tmp))
+            path.write_text('SECRET')
+            # Simulate a directory substitution whose lstat/fstat identity checks
+            # agree with the outside target. Final HANDLE path must still reject.
+            with patch.object(smoke, 'opened_final_path', return_value=str(Path(tmp) / 'outside')):
+                report = smoke.classify_logs(private, cwd, {'2026-11-08'}, private.resolve())
+            self.assertEqual(report['status'], 'unsafe_or_unreadable')
+            self.assertEqual(report['files'], [])
+            self.assertNotIn('SECRET', json.dumps(report))
+
+    def test_log_directory_replaced_after_stat(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            private, cwd, path = self.log_fixture(Path(tmp))
+            path.write_text('SECRET')
+            original = smoke.os.open
+            moved = Path(tmp) / 'moved-directory'
+            def swap_directory(p, *args):
+                path.parent.rename(moved)
+                try:
+                    path.parent.symlink_to(moved, target_is_directory=True)
+                except OSError:
+                    self.skipTest('Directory symlink creation unavailable')
+                return original(p, *args)
+            with patch.object(smoke.os, 'open', side_effect=swap_directory):
+                report = smoke.classify_logs(private, cwd, {'2026-11-08'}, private.resolve())
+            self.assertEqual(report['files'], [])
+            self.assertEqual(report['status'], 'unsafe_or_unreadable')
+
+    def test_log_exact_read_partial_and_changed_metadata(self):
+        for mode in ('exact', 'partial', 'changed'):
+            with tempfile.TemporaryDirectory() as tmp:
+                private, cwd, path = self.log_fixture(Path(tmp))
+                path.write_bytes(b'x' * (512 * 1024))
+                original = smoke.os.fdopen
+                reads = []
+                class Wrapped:
+                    def __init__(self, stream):
+                        self.stream = stream
+                    def __enter__(self):
+                        return self
+                    def __exit__(self, *args):
+                        self.stream.close()
+                    def fileno(self):
+                        return self.stream.fileno()
+                    def read(self, size):
+                        reads.append(size)
+                        data = self.stream.read(size - 1 if mode == 'partial' else size)
+                        if mode == 'changed':
+                            os.utime(path, ns=(1, 1))
+                        return data
+                with patch.object(smoke.os, 'fdopen', side_effect=lambda *a:Wrapped(original(*a))):
+                    report = smoke.classify_logs(private, cwd, {'2026-11-08'})
+                self.assertEqual(reads, [512 * 1024])
+                if mode == 'exact':
+                    self.assertEqual(report['status'], 'complete')
+                else:
+                    self.assertEqual(report['files'], [])
+                    self.assertEqual(report['status'], 'truncated' if mode == 'partial' else 'unsafe_or_unreadable')
+                    self.assertNotIn('sha256', json.dumps(report))
+
+    def test_log_date_must_be_canonical(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            private, cwd, path = self.log_fixture(Path(tmp))
+            with patch.object(smoke.os, 'open', side_effect=AssertionError('No read')):
+                for date in ('20261108', '../2026-11-08'):
+                    self.assertEqual(smoke.classify_logs(private, cwd, {date})['status'], 'invalid_date')
+
+    def test_log_directory_reparse_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            private, cwd, path = self.log_fixture(Path(tmp))
+            original = smoke.checked_stat
+            def reject_reparse(p, directory=False):
+                if Path(p) == path.parent:
+                    raise SmokeError('LOG_UNSAFE_ENTRY')
+                return original(p, directory)
+            with patch.object(smoke, 'checked_stat', side_effect=reject_reparse), patch.object(smoke.os, 'open', side_effect=AssertionError('No read')):
+                report = smoke.classify_logs(private, cwd, {'2026-11-08'})
+            self.assertEqual(report['status'], 'unsafe_or_unreadable')
+
+    def test_log_identity_change_before_read(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            private, cwd, path = self.log_fixture(Path(tmp))
+            path.write_text('before')
+            original = smoke.os.open
+            def replace_before_open(p, *args):
+                # Keep old inode allocated, so identity cannot be reused.
+                path.rename(path.with_suffix('.backup'))
+                path.write_text('secret after')
+                return original(p, *args)
+            with patch.object(smoke.os, 'open', side_effect=replace_before_open):
+                report = smoke.classify_logs(private, cwd, {'2026-11-08'})
+            self.assertEqual(report['status'], 'unsafe_or_unreadable')
+            self.assertEqual(report['files'], [])
+
+    def test_log_total_budget(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            private, cwd, path = self.log_fixture(Path(tmp))
+            for date in ('2026-11-08', '2026-11-09'):
+                directory = path.parent.parent / date
+                directory.mkdir(exist_ok=True)
+                for workspace in (str(cwd), 'unknown-workspace'):
+                    name = Path(workspace).name + '__' + hashlib.md5(workspace.encode(), usedforsecurity=False).hexdigest()
+                    for suffix in ('.log', '.old.log'):
+                        (directory / (name + suffix)).write_bytes(b'x' * 512 * 1024)
+            report = smoke.classify_logs(private, cwd, {'2026-11-08', '2026-11-09'})
+            self.assertEqual(report['status'], 'read_limit')
+            self.assertEqual(report['total_bytes'], 2 * 1024 * 1024)
+            self.assertEqual(len(report['files']), 4)
+
+    def test_eof_grace_existing_deadline_and_natural_state(self):
+        class Owner:
+            def exit_code(self):
+                return 17
+            def active_processes(self):
+                return 0
+        report = {}
+        with patch.object(smoke.time, 'monotonic', return_value=1):
+            smoke.observe_eof_exit(Owner(), 1, report)
+        self.assertEqual(report['eof_observation'], 'no_natural_exit_observed')
+        self.assertNotIn('natural_exit_code', report)
+        with patch.object(smoke.time, 'monotonic', return_value=1):
+            smoke.observe_eof_exit(Owner(), 2, report)
+        self.assertEqual(report['natural_exit_code'], 17)
+        self.assertEqual(report['eof_job_counts'], [0])
+
+    def test_no_log_read_when_cleanup_unconfirmed(self):
+        class Owner:
+            stdin = io.BytesIO()
+            stdout = io.BytesIO()
+            stderr = io.BytesIO()
+            @classmethod
+            def spawn(cls, *args):
+                return cls()
+            def exit_code(self):
+                return 0
+            def active_processes(self):
+                return 1
+            def terminate(self, timeout):
+                return {'owned_job_empty':False}
+            def close(self, timeout):
+                return {'owned_job_empty':False}
+        with tempfile.TemporaryDirectory() as tmp, patch.object(smoke, 'classify_logs', side_effect=AssertionError('No logs')):
+            report = {}
+            with self.assertRaisesRegex(SmokeError, 'INITIALIZE_EOF'):
+                smoke.execute_stage(Path('unused'), Path('unused'), Path(tmp), 'initialize', Owner, report)
+            self.assertEqual(report['cleanup_error'], 'OWNED_JOB_STOP_UNCONFIRMED')
+            self.assertEqual(report['logs']['status'], 'not_read_cleanup_unconfirmed')
+            (Path(tmp) / 'retry').mkdir()
+            with patch.object(Owner, 'close', side_effect=OSError('SECRET')):
+                with self.assertRaisesRegex(SmokeError, 'INITIALIZE_EOF'):
+                    smoke.execute_stage(Path('unused'), Path('unused'), Path(tmp) / 'retry', 'initialize', Owner, report)
+            self.assertEqual(report['cleanup_error'], 'OWNED_JOB_CLOSE_UNCONFIRMED')
+            self.assertNotIn('SECRET', json.dumps(report))
+
+    def test_log_failure_preserves_original_eof(self):
+        class Owner:
+            stdin = io.BytesIO()
+            stdout = io.BytesIO()
+            stderr = io.BytesIO()
+            @classmethod
+            def spawn(cls, *args):
+                return cls()
+            def exit_code(self):
+                return 0
+            def active_processes(self):
+                return 0
+            def terminate(self, timeout):
+                return {'owned_job_empty':True}
+            def close(self, timeout):
+                return {'owned_job_empty':True}
+        report = {}
+        with tempfile.TemporaryDirectory() as tmp, patch.object(smoke, 'classify_logs', side_effect=OSError('PRIVATE')):
+            with self.assertRaisesRegex(SmokeError, 'INITIALIZE_EOF'):
+                smoke.execute_stage(Path('unused'), Path('unused'), Path(tmp), 'initialize', Owner, report)
+        self.assertEqual(report['logs']['status'], 'unavailable')
+        self.assertNotIn('PRIVATE', json.dumps(report))
+
 
 if __name__ == "__main__":
     unittest.main()

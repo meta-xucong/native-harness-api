@@ -37,4 +37,12 @@
 
 任何新增权限/协议要求、身份验证请求、畸形帧、超长输出、超时、非预期退出或 owned Job 清理不确认，都失败而不是自动修复或改用其他登录模式。读写限长限时，报告仅含固定版本/摘要、有限状态和字节数，不输出原生任意文本、路径或配置。
 
-工具及 fixture 单测分别位于 `tools/official_workbuddy_smoke.py`、`tests/test_official_workbuddy_smoke.py`。fixture 负例通过不代表厂商入口通过。初次源码冻结时厂商程序尚未执行；实际结果以对应精确提交的专用 CI 和独立报告为准。即便 help/initialize 真正通过，也不能证明登录继承、模型选择、真实调用、原生工具停止或整链使用无障碍。
+工具及 fixture 单测分别位于 `tools/official_workbuddy_smoke.py`、`tests/test_official_workbuddy_smoke.py`。fixture 负例通过不代表厂商入口通过。
+
+## 实际有限结果与后续诊断
+
+精确提交 `b00af16a8772b14cc0c354400a691e9f4628b821` 的 [Windows CI](https://github.com/meta-xucong/native-harness-api/actions/runs/42404235577) 已实际运行固定官方包：Job 前置测试 23 PASS / 1 非 Windows guard SKIP；`--help` 正常退出码 0，观察到 help/ACP 标志，owned Job 归零。随后仅发出一条 `initialize`，得到 `INITIALIZE_EOF`，stdout/stderr 均为 0 字节，未收到协议响应。该阶段没有自然退出码证据，不能推断是认证拒绝、Job 不兼容或其他特定原因。独立取证核对了原日志及实际 739 字节摘要工件（SHA256 `b7fdeb06badb6e6f5366615eafb7dbca1b9f7cf3780a9aef6873aad1ff0b743f`）。当前仍为 **NOT_READY_FOR_DIRECT_REAL_USE**。
+
+已获准的下一步仍是同一官方版本、无账户的相同 `initialize`，仅增加 EOF 后原总 deadline 内的有界自然退出/Job 计数观察，以及本次新建临时目录内明确日志位置的白名单错误分类。日志仅在本次 owned Job 停止、读取线程结束且清理成功后读取；不扫描账号或配置 store，不跟随链接/重解析点，不导出原始日志、文件名、路径或任意异常文本。分类结果、计数、字节数和摘要不能替代成功协议响应，也不能证明已建立真实认证。禁止凭猜测添加 owner/bootstrap/region 参数、放开 breakaway 或重发请求。
+
+实际结果以精确提交对应的 CI 和独立报告为准。即便 help/initialize 都通过，也不能证明登录继承、模型选择、真实调用、原生工具停止或整链使用无障碍。

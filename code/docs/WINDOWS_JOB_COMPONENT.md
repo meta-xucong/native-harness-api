@@ -73,8 +73,11 @@ First actual Windows CI gate at commit `805726`, run `42403312420`, job
 The two failures observed Job accounting reaching zero before the retained host
 HANDLE was signalled. The vendor smoke step was consequently skipped.
 
-This patch requires both observations before success. Its exact commit still
-requires a fresh Windows run; the patch is not claimed Windows-passing.
+The fix requires both observations before success. Exact commits `667ddc96`
+and `b00af16a` subsequently passed the real Windows prerequisite: **24 tests,
+23 PASS / 1 non-Windows guard SKIP** on each. Both full-suite Windows runs at
+`b00af16a` passed **202 tests, 201 PASS / 1 guard SKIP**. These are synthetic
+process-tree tests, not real model or complete WorkBuddy lifecycle acceptance.
 Current Linux checks: **6 portable tests PASS, 18 Windows tests SKIPPED**.
 Four portable fake-API tests validate the waiting algorithm only, not Win32
 execution. No user account, paid inference, or production deployment was used.
@@ -93,5 +96,5 @@ Windows-only tests use local Python synthetic children/grandchildren and cover:
 - PID-only objects cannot reattach to a live process tree;
 - prohibited breakaway attempt.
 
-Run these tests on supported real Windows before considering integration. Mock
-Win32 success or Linux import success must never be substituted for those results.
+Keep rerunning these tests on supported real Windows when changing this component.
+Mock Win32 success or Linux import success must never substitute for those results.

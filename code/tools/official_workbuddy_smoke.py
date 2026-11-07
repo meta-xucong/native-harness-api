@@ -6,6 +6,7 @@ models, tools, billing, WorkBuddy service terms, or a production model channel.
 from __future__ import annotations
 
 import argparse
+import datetime
 import hashlib
 import json
 import os
@@ -14,6 +15,7 @@ import queue
 import subprocess
 import sys
 import struct
+import stat
 import zlib
 import tempfile
 import threading
@@ -182,7 +184,165 @@ def capture_output(owner):
     return events, overflow, buffers, threads
 
 
-def observe(owner, stage, timeout=45, capture=None):
+def observe_eof_exit(owner, deadline, diagnostics):
+    """Observation only; never kills/restarts or extends the existing deadline."""
+    end = min(deadline, time.monotonic() + .5)
+    diagnostics['eof_observation'] = 'no_natural_exit_observed'
+    samples = []
+    while time.monotonic() < end:
+        try:
+            code, count = owner.exit_code(), owner.active_processes()
+            if type(count) is not int or not 0 <= count <= 65535:
+                raise ValueError()
+            if len(samples) < 10:
+                samples.append(count)
+            if code is not None:
+                if type(code) is not int or not 0 <= code <= 0xffffffff:
+                    raise ValueError()
+                diagnostics['eof_observation'] = 'natural_exit_observed'
+                diagnostics['natural_exit_code'] = code
+                break
+        except Exception:
+            diagnostics['eof_observation'] = 'query_unavailable'
+            break
+        time.sleep(min(.05, max(0, end - time.monotonic())))
+    diagnostics['eof_job_counts'] = samples
+
+
+LOG_MARKERS = {
+    'event_loop_drain': b'event_loop_drain',
+    'dispatch_unmatched': b'[dispatchchain] no strategy matched',
+    'auth_init_timeout': b'auth initialization timed out',
+    'credential_bootstrap_failed': b'credentialbootstrap] startup failed',
+    'module_missing': b'module_not_found',
+    'uncaught_exception': b'uncaughtexception',
+    'unhandled_rejection': b'unhandledrejection',
+    'outer_job_unavailable': b'windows no-orphans cleanup unavailable',
+}
+
+
+def checked_stat(path, directory=False):
+    info = path.lstat()
+    if stat.S_ISLNK(info.st_mode) or getattr(info, 'st_file_attributes', 0) & 0x400:
+        raise SmokeError('LOG_UNSAFE_ENTRY')
+    if directory:
+        if not stat.S_ISDIR(info.st_mode):
+            raise SmokeError('LOG_UNSAFE_ENTRY')
+    elif not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+        raise SmokeError('LOG_UNSAFE_ENTRY')
+    return info
+
+
+
+def opened_final_path(fd):
+    """Resolve the opened object, not a second pathname lookup. Never read bytes."""
+    if os.name == 'nt':
+        import ctypes
+        import msvcrt
+        from ctypes import wintypes
+        api = ctypes.WinDLL('kernel32', use_last_error=True).GetFinalPathNameByHandleW
+        api.argtypes = [wintypes.HANDLE, wintypes.LPWSTR, wintypes.DWORD, wintypes.DWORD]
+        api.restype = wintypes.DWORD
+        buf = ctypes.create_unicode_buffer(32768)
+        size = api(msvcrt.get_osfhandle(fd), buf, len(buf), 0)
+        if not size or size >= len(buf):
+            raise SmokeError('LOG_TARGET_UNAVAILABLE')
+        value = buf.value
+        if value.startswith('\\\\?\\UNC\\'):
+            value = '\\\\' + value[8:]
+        elif value.startswith('\\\\?\\'):
+            value = value[4:]
+        return os.path.normcase(os.path.normpath(value))
+    if sys.platform.startswith('linux'):
+        return os.path.normpath(os.readlink('/proc/self/fd/' + str(fd)))
+    raise SmokeError('LOG_TARGET_UNAVAILABLE')
+
+
+def verify_opened_target(fd, expected, trusted_root):
+    actual = opened_final_path(fd)
+    expected = os.path.normcase(os.path.abspath(expected))
+    root = os.path.normcase(os.path.abspath(trusted_root))
+    if actual != expected or os.path.commonpath((actual, root)) != root:
+        raise SmokeError('LOG_TARGET_OUTSIDE_ALLOWLIST')
+
+
+def classify_logs(private, cwd, dates, trusted_root=None):
+    """Only exact fresh-run workspace logger files, never traverse account stores.
+
+    Fixed official 5.9.3 source: PathUtils.getLoggerDir / LoggerStorageService
+    buildLogFilename. This is bounded diagnostic reading, NOT a hostile-process
+    sandbox. Call only after owned-job and reader cleanup has succeeded.
+    """
+    trusted_root = private.resolve(strict=True) if trusted_root is None else trusted_root
+    report = {'status':'complete', 'files':[], 'total_bytes':0,
+              'observed_categories':{key:0 for key in LOG_MARKERS}}
+    if len(dates) > 2:
+        return {**report, 'status':'date_limit'}
+    roots = [private, private / 'CODEBUDDY_CONFIG_DIR', private / 'CODEBUDDY_CONFIG_DIR/logs']
+    try:
+        for path in roots:
+            checked_stat(path, directory=True)
+    except FileNotFoundError:
+        return report
+    except (OSError, SmokeError):
+        return {**report, 'status':'unsafe_or_unreadable'}
+    for date in sorted(dates):
+        try:
+            if datetime.date.fromisoformat(date).isoformat() != date:
+                raise ValueError('noncanonical')
+        except ValueError:
+            return {**report, 'status':'invalid_date'}
+        directory = roots[-1] / date
+        try:
+            checked_stat(directory, directory=True)
+        except FileNotFoundError:
+            continue
+        except (OSError, SmokeError):
+            return {**report, 'status':'unsafe_or_unreadable'}
+        for workspace in (str(cwd), 'unknown-workspace'):
+            digest = hashlib.md5(workspace.encode('utf-8'), usedforsecurity=False).hexdigest()
+            name = Path(workspace).name + '__' + digest
+            for suffix in ('.log', '.old.log'):
+                path = directory / (name + suffix)
+                try:
+                    ancestors = roots + [directory]
+                    before_dirs = [checked_stat(p, directory=True) for p in ancestors]
+                    before = checked_stat(path)
+                    if len(report['files']) >= 8 or before.st_size > 512 * 1024 or report['total_bytes'] + before.st_size > 2 * 1024 * 1024:
+                        return {**report, 'status':'read_limit'}
+                    fd = os.open(path, os.O_RDONLY | getattr(os, 'O_BINARY', 0) | getattr(os, 'O_NOFOLLOW', 0))
+                    with os.fdopen(fd, 'rb') as stream:
+                        verify_opened_target(stream.fileno(), trusted_root / path.relative_to(private), trusted_root)
+                        opened = os.fstat(stream.fileno())
+                        if (opened.st_dev, opened.st_ino, opened.st_size, opened.st_nlink) != (before.st_dev, before.st_ino, before.st_size, 1):
+                            raise SmokeError('LOG_CHANGED')
+                        current_file = checked_stat(path)
+                        if (current_file.st_dev, current_file.st_ino) != (opened.st_dev, opened.st_ino):
+                            raise SmokeError('LOG_CHANGED')
+                        for ancestor, original in zip(ancestors, before_dirs):
+                            current = checked_stat(ancestor, directory=True)
+                            if (current.st_dev, current.st_ino) != (original.st_dev, original.st_ino):
+                                raise SmokeError('LOG_CHANGED')
+                        data = stream.read(before.st_size)
+                        after = os.fstat(stream.fileno())
+                        if len(data) != before.st_size:
+                            return {**report, 'status':'truncated', 'partial_bytes':len(data)}
+                        if (after.st_dev, after.st_ino, after.st_size, after.st_nlink, after.st_mtime_ns, after.st_ctime_ns) != (opened.st_dev, opened.st_ino, opened.st_size, 1, opened.st_mtime_ns, opened.st_ctime_ns):
+                            raise SmokeError('LOG_CHANGED')
+                        verify_opened_target(stream.fileno(), trusted_root / path.relative_to(private), trusted_root)
+                    report['files'].append({'bytes':len(data), 'sha256':hashlib.sha256(data).hexdigest()})
+                    report['total_bytes'] += len(data)
+                    lowered = data.lower()
+                    for key, marker in LOG_MARKERS.items():
+                        report['observed_categories'][key] += lowered.count(marker)
+                except FileNotFoundError:
+                    continue
+                except (OSError, SmokeError):
+                    return {**report, 'status':'unsafe_or_unreadable'}
+    return report
+
+
+def observe(owner, stage, timeout=45, capture=None, diagnostics=None):
     events, overflow, buffers, threads = capture or capture_output(owner)
     if stage == 'initialize':
         # One bounded request, no client responses, authentication, session/new or prompt.
@@ -227,6 +387,7 @@ def observe(owner, stage, timeout=45, capture=None):
                 raise SmokeError('HELP_NOT_OBSERVED')
             break
         if stage == 'initialize' and len(ended) == 2:
+            observe_eof_exit(owner, deadline, diagnostics if diagnostics is not None else {})
             raise SmokeError('INITIALIZE_EOF')
     if summary is None:
         raise SmokeError('NATIVE_DEADLINE')
@@ -252,15 +413,19 @@ def execute_stage(executable, entry, root, stage, job_class, diagnostics=None):
     private.mkdir()
     cwd = private / 'workspace'
     cwd.mkdir()
+    trusted_log_root = private.resolve(strict=True)  # Capture before vendor launch.
     owner = None
     summary = None
     capture = None
+    failure = None
+    started_date = datetime.datetime.now(datetime.timezone.utc).date().isoformat()
     try:
         owner = job_class.spawn([str(executable), str(entry), '--help' if stage == 'help' else '--acp'],
                                 cwd, isolated_env(private))
         capture = capture_output(owner)
-        summary, buffers, threads, overflow = observe(owner, stage, capture=capture)
+        summary, buffers, threads, overflow = observe(owner, stage, capture=capture, diagnostics=diagnostics)
     except Exception as exc:
+        failure = exc
         # Atomic-spawn failures may retain an owned HANDLE for explicit cleanup.
         if owner is None:
             owner = getattr(exc, "owner", None)
@@ -296,11 +461,23 @@ def execute_stage(executable, entry, root, stage, job_class, diagnostics=None):
                 diagnostics['credential_protection_mentioned'] = b'credential protection' in text or b'credentialprotection' in text
                 diagnostics['output_limit_or_io_flag'] = capture[1].is_set()
             # Close pipe handles only after the process is stopped and readers joined.
-            result = owner.close(timeout=10)
-            if result.get('owned_job_empty') is not True:
-                cleanup_error = 'OWNED_JOB_STOP_UNCONFIRMED'
+            try:
+                result = owner.close(timeout=10)
+                if result.get('owned_job_empty') is not True:
+                    cleanup_error = 'OWNED_JOB_STOP_UNCONFIRMED'
+            except Exception:
+                cleanup_error = 'OWNED_JOB_CLOSE_UNCONFIRMED'
             if cleanup_error:
-                raise SmokeError(cleanup_error)
+                diagnostics['cleanup_error'] = cleanup_error
+                diagnostics['logs'] = {'status':'not_read_cleanup_unconfirmed'}
+                if failure is None:
+                    raise SmokeError(cleanup_error)
+            elif stage == 'initialize' and failure is not None:
+                finished_date = datetime.datetime.now(datetime.timezone.utc).date().isoformat()
+                try:
+                    diagnostics['logs'] = classify_logs(private, cwd, {started_date, finished_date}, trusted_log_root)
+                except Exception:
+                    diagnostics['logs'] = {'status':'unavailable'}
     if overflow.is_set():
         raise SmokeError('NATIVE_OUTPUT_LIMIT_OR_IO')
     if diagnostics.get('host_exit_code_before_cleanup', 0) != 0:
