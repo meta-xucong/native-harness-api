@@ -1,5 +1,7 @@
 # Native Harness API
 
+**最新就绪结论：NOT_READY_FOR_DIRECT_REAL_USE。** 用户要求的是完整真实使用，不以实验探针代替成品。现继续开发必要组件和隔离云端验证；真实 WorkBuddy 认证/模型/执行恢复及 404token 完整链路未验收前，不宣称“打开即可使用”。见 [完成门槛](blueprint/P2-COMPLETION-GATES.md) 与 [真实差距清单](code/docs/REAL_READINESS_GAPS.md)。
+
 404token 本地原生算力渠道适配项目。**当前分支推进 P1b 真实 Bridge/Sub2API 接缝，仍不是 WorkBuddy 上游或可部署模型服务。** 真实 Bridge HTTP 已联调；Sub2API 实际鉴权中间件/handler HTTP 链通过，但数据库迁移及真实 PostgreSQL 路由持久性未验收，执行端仍为明确标注的 FakeHarness。
 
 另新增独立的 **WorkBuddy bundled-runtime 本机一次性真实试验程序**，供用户显式选择已安装的官方软件，在本机确认一次 prompt。它不放开上述正式模型渠道，不提取登录凭据，不以 mock 测试声称真实账号已验收。参见 [试验指南](code/docs/WORKBUDDY_LOCAL_TRIAL.md)、[Windows 打包说明](code/packaging/README.zh-CN.md) 和 [P2 边界](blueprint/P2-LOCAL-TRIAL-ADDENDUM.md)。

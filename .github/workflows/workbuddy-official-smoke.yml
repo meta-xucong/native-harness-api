@@ -1,0 +1,40 @@
+name: Official WorkBuddy no-account entry smoke
+on:
+  push:
+    paths:
+      - 'code/tools/official_workbuddy_smoke.py'
+      - '.github/workflows/workbuddy-official-smoke.yml'
+permissions:
+  contents: read
+jobs:
+  no-account-entry:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.13.17'
+      - name: Offline fixtures, no vendor execution
+        run: python -m unittest discover -s code/tests -p test_official_workbuddy_smoke.py -v
+      - name: Real Windows owned job prerequisite, no vendor execution
+        env:
+          PYTHONPATH: code/src
+        run: python -m unittest discover -s code/tests -p test_windows_job.py -v
+      - name: Pinned official unpack-only, help and initialize, no account or prompt
+        shell: pwsh
+        run: |
+          $sevenZip = Join-Path $env:ProgramFiles '7-Zip/7z.exe'
+          if (-not (Test-Path $sevenZip)) { throw 'Existing runner 7-Zip required; no installation fallback' }
+          python code/tools/official_workbuddy_smoke.py --seven-zip "$sevenZip" --summary smoke-summary.json
+          exit $LASTEXITCODE
+      - name: Sanitized summary only, never vendor output or state
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: workbuddy-no-account-entry-summary
+          path: smoke-summary.json
+          retention-days: 7
+          if-no-files-found: warn

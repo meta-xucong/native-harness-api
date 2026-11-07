@@ -1,5 +1,7 @@
 # Native Harness P1b 接缝代码
 
+最新续作以 [真实使用完成门槛](../blueprint/P2-COMPLETION-GATES.md) 为准。现有 probe 只是一项实验工具，不是用户要求的完整产品；[差距清单](docs/REAL_READINESS_GAPS.md) 未关闭前状态始终为 `NOT_READY_FOR_DIRECT_REAL_USE`。
+
 **当前是单用户、单 Key、单槽、合成执行的集成试验，不是 WorkBuddy 上游，也不是生产模型服务。** Python 3.12+，本仓运行组件只依赖标准库；真实 Bridge 测试另需其仓库锁定的依赖。不会读取原生账号或生产账本。
 
 独立新增的 [WorkBuddy 本机试验程序](docs/WORKBUDDY_LOCAL_TRIAL.md) 可由用户明确选择安装的官方 bundle 并确认一次真实运行。它不是上述 P1b runner 的替代/开关，不启动网关，不放开 synthetic 门禁。Windows x64 包使用私有 CPython 3.13.17，构建与使用见 [packaging](packaging/README.zh-CN.md)。真实用户登录和模型行为需在用户电脑上测试。
