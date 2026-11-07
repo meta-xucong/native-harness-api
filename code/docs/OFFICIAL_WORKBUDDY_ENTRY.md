@@ -59,3 +59,31 @@ Windows matrix 各 214 PASS / 1 SKIP，Ubuntu 各 196 PASS / 19 SKIP。
 独立核对过原日志与 928 字节 summary 工件，SHA256
 `decead26ab3eca9e1445e8387cce9045600d39e0cbe79dc6d07a7de371c0934e`。
 上述数字只属于该提交，不覆盖后续改动，也不包含账户/模型验收。
+
+## 后续限定实验：外部有限 Node preload
+
+获准的下一项只检验事件循环活性假设：initialize 阶段使用 Node 官方
+`--require` 加载本程序新建、摘要固定的 CJS preload，然后仍由 Node
+以原官方文件作为 main 执行 `--acp`。preload 仅执行
+`setTimeout(() => {}, 45000)`，不改厂商文件、不 require 厂商入口、不改变
+process.argv、不截获退出/异常、不读配置或传递 owner 身份。help 命令不变。
+
+依据是固定入口 await 了动态 import，但被导入 bundle 的 business/container
+异步生命周期并未被入口 await；没有引用的 Promise 本身不保持 Node 存活。
+这只是可检验假设，并未定位实际失败调用链。官方支持依据：
+[Node --require](https://nodejs.org/api/cli.html#-r---require-module) 与
+[Electron RUN_AS_NODE](https://www.electronjs.org/docs/latest/api/environment-variables#electron_run_as_node)。
+这里没有宣称此组合已获 WorkBuddy 厂商支持。
+
+preload 会增加 process.execArgv 和模块缓存状态，可能被 fork/worker 继承，
+所以不称“完全无侵入”。timer 有限；观察仍使用原 45 秒总 deadline，成功后
+立即按原规则清理，不等待 timer 到期。原 cleanup 等待预算不算额外 initialize
+时间。只发一次 initialize，无 direct fallback/重试/第二探测；日志候选与
+允许读取范围、输出白名单、权限/额外 RPC/残帧/非零退出失败规则全部不变。
+summary 仅增加固定 profile、毫秒数与本程序 preload SHA，区分本轮与旧 direct
+结果。自写 Node fixture 不执行厂商程序，只验证 argv/main、有限寿命及显式
+exit 不被拦截。缺 Node 明确跳过，不安装其他运行时。
+
+即使本轮 initialize 成功，也只证明此有限无账户组合可以初始化，不能证明
+确切内部根因、GUI 登录继承、模型选择或用户可直接使用。未返回响应或超时仍
+失败，不能借此追加私有参数、登录、session/new、模型或 prompt。

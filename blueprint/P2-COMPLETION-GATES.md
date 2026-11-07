@@ -66,3 +66,12 @@ host_exited、handles_closed、io_threads_stopped、cleanup_complete；
 官方 Local Assistant 确实驱动 PC WorkBuddy，但公开消息 API 缺模型/目标电脑/
 独立请求终态等合同，不能为满足交付而静默换成同名“模型渠道”。保留原目标，
 不新建不解决目标缺口的 OAuth 服务，不要求用户代做内部架构选型。
+
+### 已获准的事件循环假设实验
+
+在固定官方版本、隔离 Windows、无账户的原有范围内，可在 initialize 阶段
+使用本程序有限 Node `--require` preload 保持最多 45 秒事件循环活性，
+不修改厂商文件/argv、不伪造身份、不截获退出。仅原唯一 initialize，原总
+观察期限及清理约束，help 原命令和日志白名单不变；无重试或备用启动。
+须独立源审后执行，summary 标记不同入口 profile。此实验仅检验启动活性假设，
+成功也不放开任何真实模型准入或宣称完整产品就绪。

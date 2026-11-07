@@ -32,6 +32,9 @@ PAYLOAD_SHA = '19d3e4ad5108a080ef755c4475eecb84d97e46cfe77334d5d5e645fb1408e7e9'
 ENTRY = 'resources/app.asar.unpacked/cli/bin/codebuddy'
 ENTRY_SHA = '8df0f1c7bc6535e5df0b626450228241d874867023adb6c9c8f7b1a882590bf4'
 MAX_OUTPUT = 1024 * 1024
+KEEPALIVE_MS = 45000
+KEEPALIVE_BYTES = b"'use strict';\nsetTimeout(() => {}, 45000);\n"
+KEEPALIVE_SHA = '10d319ccff3336b745694709b4c65fd118c53139888869b5a9602045e45e2846'
 INITIALIZE = {'jsonrpc': '2.0', 'id': 1, 'method': 'initialize', 'params': {
     'protocolVersion': 1, 'clientCapabilities': {
         'fs': {'readTextFile': False, 'writeTextFile': False}, 'terminal': False},
@@ -405,6 +408,31 @@ def validate_complete_stdout(data):
     return validate_initialize(parse_frame(frames[0]))
 
 
+def verify_keepalive(path, private):
+    """Verify only our fresh, fixed preload; never inspect vendor account data."""
+    try:
+        trusted = private.resolve(strict=True)
+        info = path.lstat()
+        if (not path.is_absolute() or path.parent != trusted or
+                path.is_symlink() or not stat.S_ISREG(info.st_mode) or
+                info.st_size != len(KEEPALIVE_BYTES) or
+                path.resolve(strict=True) != path or sha(path) != KEEPALIVE_SHA):
+            raise SmokeError('KEEPALIVE_INTEGRITY_FAILED')
+    except OSError:
+        raise SmokeError('KEEPALIVE_INTEGRITY_FAILED') from None
+    return path
+
+
+def create_keepalive(private):
+    path = private.resolve(strict=True) / 'acp-keepalive.cjs'
+    try:
+        with path.open('xb') as stream:
+            stream.write(KEEPALIVE_BYTES)
+    except OSError:
+        raise SmokeError('KEEPALIVE_CREATE_FAILED') from None
+    return verify_keepalive(path, private)
+
+
 def execute_stage(executable, entry, root, stage, job_class, diagnostics=None):
     if stage not in {'help', 'initialize'}:
         raise SmokeError('UNAUTHORIZED_STAGE')
@@ -420,8 +448,15 @@ def execute_stage(executable, entry, root, stage, job_class, diagnostics=None):
     failure = None
     started_date = datetime.datetime.now(datetime.timezone.utc).date().isoformat()
     try:
-        owner = job_class.spawn([str(executable), str(entry), '--help' if stage == 'help' else '--acp'],
-                                cwd, isolated_env(private))
+        command = [str(executable), str(entry), '--help']
+        diagnostics['entry_profile'] = 'direct_help'
+        if stage == 'initialize':
+            diagnostics.update(entry_profile='node_preload_initialize',
+                               keepalive_ms=KEEPALIVE_MS, keepalive_sha256=KEEPALIVE_SHA)
+            preload = create_keepalive(private)
+            # Node runtime option, not a vendor flag. Entry remains Node's main.
+            command = [str(executable), '--require', str(preload), str(entry), '--acp']
+        owner = job_class.spawn(command, cwd, isolated_env(private))
         capture = capture_output(owner)
         summary, buffers, threads, overflow = observe(owner, stage, capture=capture, diagnostics=diagnostics)
     except Exception as exc:

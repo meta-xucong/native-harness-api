@@ -525,5 +525,150 @@ class OfflineTests(unittest.TestCase):
         self.assertNotIn('PRIVATE', json.dumps(report))
 
 
+
+class KeepaliveCommandTests(unittest.TestCase):
+    def owner_class(self, stage):
+        class Input(io.BytesIO):
+            def __init__(self):
+                super().__init__()
+                self.written = bytearray()
+            def write(self, data):
+                self.written.extend(data)
+                return super().write(data)
+        class Owner:
+            calls = []
+            instance = None
+            @classmethod
+            def spawn(cls, command, cwd, env):
+                cls.calls.append((command, cwd, env))
+                owner = cls()
+                owner.stdin = Input()
+                owner.stdout = io.BytesIO(b'--help --acp\n' if stage == 'help' else b'{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1,"agentCapabilities":{}}}\n')
+                owner.stderr = io.BytesIO()
+                cls.instance = owner
+                return owner
+            def exit_code(self): return 0
+            def host_exited(self): return True
+            def terminate(self, timeout): return {'owned_job_empty': True}
+            def close(self, timeout): return {'owned_job_empty': True}
+        return Owner
+
+    def test_help_command_unchanged_no_preloader(self):
+        owner = self.owner_class('help')
+        with tempfile.TemporaryDirectory() as tmp:
+            result = smoke.execute_stage(Path('fixture.exe'), Path('fixture.entry'), Path(tmp), 'help', owner)
+            self.assertEqual(owner.calls[0][0], ['fixture.exe','fixture.entry','--help'])
+            self.assertFalse((Path(tmp)/'help/acp-keepalive.cjs').exists())
+            self.assertEqual(result['entry_profile'], 'direct_help')
+            self.assertNotIn('keepalive_ms', result)
+            self.assertEqual(bytes(owner.instance.stdin.written), b'')
+
+    def test_initialize_preload_only_and_single_rpc(self):
+        owner = self.owner_class('initialize')
+        with tempfile.TemporaryDirectory() as tmp:
+            result = smoke.execute_stage(Path('fixture.exe'), Path('fixture.entry'), Path(tmp), 'initialize', owner)
+            command, _, env = owner.calls[0]
+            path = (Path(tmp)/'initialize/acp-keepalive.cjs').resolve()
+            self.assertEqual(command, ['fixture.exe','--require',str(path),'fixture.entry','--acp'])
+            self.assertEqual(path.read_bytes(), smoke.KEEPALIVE_BYTES)
+            self.assertEqual(hashlib.sha256(path.read_bytes()).hexdigest(), smoke.KEEPALIVE_SHA)
+            self.assertEqual(len(owner.calls), 1)
+            self.assertEqual([json.loads(line) for line in owner.instance.stdin.getvalue().splitlines()], [INITIALIZE])
+            self.assertNotIn('NODE_OPTIONS', env)
+            self.assertEqual(result['entry_profile'], 'node_preload_initialize')
+            self.assertEqual(result['keepalive_ms'], 45000)
+            self.assertEqual(result['keepalive_sha256'], smoke.KEEPALIVE_SHA)
+
+    def test_missing_and_hash_mismatch_reject_before_spawn(self):
+        original = smoke.create_keepalive
+        for mutation in ('missing','corrupt'):
+            owner = self.owner_class('initialize')
+            def tamper(private):
+                path = original(private)
+                if mutation == 'missing': path.unlink()
+                else: path.write_bytes(b'x'*len(smoke.KEEPALIVE_BYTES))
+                return smoke.verify_keepalive(path, private)
+            with tempfile.TemporaryDirectory() as tmp, patch.object(smoke, 'create_keepalive', side_effect=tamper):
+                with self.assertRaisesRegex(SmokeError, '^KEEPALIVE_INTEGRITY_FAILED$'):
+                    smoke.execute_stage(Path('fixture.exe'), Path('entry'), Path(tmp), 'initialize', owner)
+                self.assertEqual(owner.calls, [])
+
+    def test_empty_or_error_exit_never_retries_direct_entry(self):
+        for exit_code in (0, 7):
+            with self.subTest(exit_code=exit_code):
+                owner = self.owner_class('initialize')
+                original_spawn = owner.spawn
+                def empty_spawn(command, cwd, env):
+                    instance = original_spawn(command, cwd, env)
+                    instance.stdout = io.BytesIO(b'')
+                    instance.exit_code = lambda: exit_code
+                    return instance
+                with tempfile.TemporaryDirectory() as tmp, patch.object(owner, 'spawn', side_effect=empty_spawn):
+                    with self.assertRaises(SmokeError):
+                        smoke.execute_stage(Path('fixture.exe'), Path('entry'), Path(tmp), 'initialize', owner)
+                    self.assertEqual(len(owner.calls), 1)
+                    self.assertEqual(owner.calls[0][0][1], '--require')
+                    self.assertEqual([json.loads(line) for line in bytes(owner.instance.stdin.written).splitlines()], [INITIALIZE])
+
+    def test_preloader_exclusive_creation_and_fixed_deadline(self):
+        import inspect
+        with tempfile.TemporaryDirectory() as tmp:
+            smoke.create_keepalive(Path(tmp))
+            with self.assertRaisesRegex(SmokeError, '^KEEPALIVE_CREATE_FAILED$'):
+                smoke.create_keepalive(Path(tmp))
+        self.assertEqual(inspect.signature(observe).parameters['timeout'].default, 45)
+        self.assertEqual(smoke.KEEPALIVE_BYTES, b"'use strict';\nsetTimeout(() => {}, 45000);\n")
+
+
+import shutil
+import subprocess
+import time
+NODE = shutil.which('node')
+
+@unittest.skipUnless(NODE, 'Node needed for self-written fixtures')
+class KeepaliveTests(unittest.TestCase):
+    def run_fixture(self, source, *, preload=True, lifetime=None):
+        with tempfile.TemporaryDirectory() as folder:
+            folder = Path(folder)
+            entry = folder / 'fixture main.cjs'
+            entry.write_text(source)
+            wrapper = folder / 'acp-keepalive.cjs'
+            wrapper.write_bytes(smoke.KEEPALIVE_BYTES)
+            if lifetime is not None:
+                # Short-lived fixture copy, not a production CLI/env override.
+                wrapper = folder / 'fixture preload.cjs'
+                wrapper.write_text(smoke.KEEPALIVE_BYTES.decode().replace('45000', str(lifetime)))
+            command = [NODE] + (['--require', str(wrapper)] if preload else []) + [str(entry), '--acp']
+            result = subprocess.run(command, input=b'{"jsonrpc":"2.0","id":1,"method":"initialize"}\n', stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=10)
+            return result, str(entry)
+
+    def test_preserves_vendor_style_argv_and_main(self):
+        result, entry = self.run_fixture('console.log(JSON.stringify({argv:process.argv.slice(1),main:require.main===module,file:__filename}));process.exit(0);')
+        data = json.loads(result.stdout)
+        self.assertEqual(data, {'argv':[entry,'--acp'],'main':True,'file':entry})
+        self.assertEqual(result.returncode, 0)
+
+    def test_unref_async_fixture_requires_keepalive(self):
+        source = 'setTimeout(()=>{console.log(JSON.stringify({id:1,result:{fixture:true}}));process.exit(0)},40).unref();'
+        direct, _ = self.run_fixture(source, preload=False)
+        kept, _ = self.run_fixture(source)
+        self.assertEqual(direct.returncode, 0)
+        self.assertEqual(direct.stdout, b'')
+        self.assertEqual(json.loads(kept.stdout), {'id':1,'result':{'fixture':True}})
+
+    def test_explicit_exit_not_intercepted(self):
+        result, _ = self.run_fixture('process.exit(7);')
+        self.assertEqual(result.returncode, 7)
+        self.assertEqual(result.stdout, b'')
+
+    def test_finite_handle_expires(self):
+        started = time.monotonic()
+        result, _ = self.run_fixture('', lifetime=70)
+        self.assertEqual(result.returncode, 0)
+        self.assertGreaterEqual(time.monotonic()-started, .06)
+        self.assertEqual(result.stdout, b'')
+
+
+
 if __name__ == "__main__":
     unittest.main()
