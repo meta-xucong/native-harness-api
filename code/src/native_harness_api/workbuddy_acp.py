@@ -41,6 +41,9 @@ class ACPClient:
         if not self.cwd.is_dir():
             raise ValueError('Working directory required')
         self.timeout, self.permission_handler = timeout, permission_handler
+        self._selection = None
+        self._observed_model_config_id = None
+        self._selection_lock = threading.Lock()
         self.process = None
         # The existing experimental probe retains its original host-only path.
         # Explicit supervision has no Popen or platform fallback and is not a
@@ -302,7 +305,17 @@ class ACPClient:
                 not isinstance(value.get('models', {}).get('availableModels', []), list)):
             raise ACPError('ACP_INVALID_SESSION')
         self.session_id, self.session = sid, value
-        self._pin_mode_sources()
+        # A present unsafe initial value must not be erased by queued updates.
+        # Missing initial mode remains subject to the existing admission gate.
+        try:
+            observed_modes = self._pin_mode_sources()
+            if any(mode not in self.SAFE_MODES for mode in observed_modes):
+                raise ACPError('ACP_PERMISSION_MODE_UNVERIFIED')
+            if 'configOptions' in self.session:
+                self._observe_config_snapshot()
+        except ACPError as exc:
+            self.fault = exc.code
+            raise
         for event in self._pending_events:
             self._event(event)
         self._pending_events.clear()
@@ -312,10 +325,31 @@ class ACPClient:
         options = self.session.get('configOptions', [])
         if not isinstance(options, list) or any(not isinstance(o, dict) for o in options):
             raise ACPError('ACP_INVALID_OPTIONS')
+        ids = [o.get('id') for o in options]
+        if any(not isinstance(i, str) or not i for i in ids) or len(ids) != len(set(ids)):
+            raise ACPError('ACP_INVALID_OPTIONS')
         found = [o for o in options if isinstance(o, dict) and o.get('category') == 'model']
         if len(found) > 1:
             raise ACPError('ACP_AMBIGUOUS_MODEL')
+        if found:
+            item = found[0]
+            values = self._values(item.get('options'))
+            if (item.get('type') != 'select' or not isinstance(item.get('currentValue'), str) or
+                    item['currentValue'] not in values or len(values) != len(set(values))):
+                raise ACPError('ACP_INVALID_OPTIONS')
         return found[0] if found else None
+
+    def _observe_config_snapshot(self):
+        # Pin an observed source even before selection. Full snapshots cannot
+        # delete, replace or repair previously observed malformed evidence.
+        option = self._model_option()
+        if option is None:
+            raise ACPError('ACP_MODEL_UNVERIFIED')
+        identifier = option['id']
+        if self._observed_model_config_id not in (None, identifier):
+            raise ACPError('ACP_MODEL_CHANGED')
+        self._observed_model_config_id = identifier
+        return option
 
     @staticmethod
     def _values(options):
@@ -327,42 +361,119 @@ class ACPClient:
                 raise ACPError('ACP_INVALID_OPTIONS')
             if 'group' in option:
                 values.extend(ACPClient._values(option.get('options')))
-            elif isinstance(option.get('value'), str):
+            elif isinstance(option.get('value'), str) and option['value']:
                 values.append(option['value'])
             else:
                 raise ACPError('ACP_INVALID_OPTIONS')
         return values
 
-    def set_model(self, model_id):
-        if not self.session_id or not isinstance(model_id, str) or not model_id:
-            raise ACPError('ACP_INVALID_STATE')
+    @staticmethod
+    def _legacy_catalog(models):
+        catalog = models.get('availableModels') if isinstance(models, dict) else None
+        if (not isinstance(catalog, list) or any(not isinstance(m, dict) or
+                not isinstance(m.get('modelId'), str) or not m['modelId'] for m in catalog)):
+            raise ACPError('ACP_INVALID_OPTIONS')
+        identifiers = [m['modelId'] for m in catalog]
+        if len(identifiers) != len(set(identifiers)):
+            raise ACPError('ACP_AMBIGUOUS_MODEL')
+        return identifiers
+
+    def _selection_observation(self, config=False):
+        pending = self._selection
+        if pending is None:
+            return
         option = self._model_option()
-        if option is not None:
-            if model_id not in self._values(option.get('options')):
-                raise ACPError('ACP_MODEL_UNAVAILABLE')
-            option['currentValue'] = None  # Require fresh readback, not stale initial state.
-            value = self._rpc('session/set_config_option', {'sessionId':self.session_id,'configId':option['id'],'value':model_id})
+        if config or pending['source'][0] == 'config':
+            if option is None:
+                raise ACPError('ACP_MODEL_UNVERIFIED')
+            identifier = option.get('id')
+            values = self._values(option.get('options'))
+            if (not isinstance(identifier, str) or not identifier or
+                    option.get('type') != 'select' or
+                    not isinstance(option.get('currentValue'), str) or
+                    len(values) != len(set(values)) or
+                    pending['target'] not in values):
+                raise ACPError('ACP_MODEL_UNVERIFIED')
+            if pending['source'][0] == 'config' and identifier != pending['source'][1]:
+                raise ACPError('ACP_MODEL_CHANGED')
+            pending['source'] = ('config', identifier)
+            current = option['currentValue']
+        else:
+            current = self.session.get('models', {}).get('currentModelId')
+        pending['fresh'] = current == pending['target']
+        if not pending['fresh'] and pending['acked']:
+            raise ACPError('ACP_MODEL_UNVERIFIED')
+
+    def set_model(self, model_id):
+        # Do not hold the lifecycle lock while waiting for native state: close()
+        # remains able to interrupt. A concurrent caller cannot send a setter.
+        if not self._selection_lock.acquire(blocking=False):
+            raise ACPError('ACP_INVALID_STATE')
+        try:
+            return self._select_model(model_id)
+        finally:
+            self._selection_lock.release()
+
+    def _select_model(self, model_id):
+        if (self.fault or self._selection is not None or self.model_id is not None or
+                not self.session_id or not isinstance(model_id, str) or not model_id):
+            raise ACPError('ACP_INVALID_STATE')
+        try:
+            if 'configOptions' in self.session:
+                self._observe_config_snapshot()
+            self._drain_controls()
+            self._safe_mode()
+            option = self._model_option()
+            if option is None and 'configOptions' in self.session:
+                raise ACPError('ACP_MODEL_UNVERIFIED')
+            source = ('config', option.get('id')) if option is not None else ('legacy', None)
+            self._selection = {'source':source, 'target':model_id, 'fresh':False, 'acked':False}
+            if option is not None:
+                self._selection_observation(config=True)
+                method = 'session/set_config_option'
+                params = {'sessionId':self.session_id, 'configId':option['id'], 'value':model_id}
+            else:
+                models = self.session.get('models', {})
+                identifiers = self._legacy_catalog(models)
+                if model_id not in identifiers:
+                    raise ACPError('ACP_MODEL_UNAVAILABLE')
+                method = 'session/set_model'
+                params = {'sessionId':self.session_id, 'modelId':model_id}
+            self._selection['fresh'] = False
+            value = self._rpc(method, params)
+            # Acknowledgment echoes are never state evidence; contradictions in
+            # either supported typed model field cannot be silently ignored.
+            for key in ('modelId', 'currentModelId'):
+                if key in value and (not isinstance(value[key], str) or value[key] != model_id):
+                    raise ACPError('ACP_MODEL_UNVERIFIED')
+            if method == 'session/set_config_option' and 'configOptions' not in value:
+                raise ACPError('ACP_MODEL_UNVERIFIED')
+            self._selection['acked'] = True
             if 'configOptions' in value:
                 self.session['configOptions'] = value['configOptions']
-                self._pin_mode_sources()
-            observed = self._model_option()
-            current = observed.get('currentValue') if observed else None
-        else:
-            models = self.session.get('models', {})
-            if model_id not in [m.get('modelId') for m in models.get('availableModels', []) if isinstance(m, dict)]:
-                raise ACPError('ACP_MODEL_UNAVAILABLE')
-            # Clear stale initial state; only an actual response/update is readback.
-            models['currentModelId'] = None
-            value = self._rpc('session/set_model', {'sessionId':self.session_id,'modelId':model_id})
-            current = value.get('currentModelId', self.session['models'].get('currentModelId'))
-            self.session['models']['currentModelId'] = current
-        if current != model_id:
-            self.fault = 'ACP_MODEL_UNVERIFIED'
-            raise ACPError(self.fault)
-        self.model_id = model_id
-        self._model_source = ('config', option['id']) if option is not None else ('legacy', None)
-        self._check_model()
-        return {'model_id': model_id, 'readback_confirmed': True}
+                self._observe_config_snapshot()
+                self._safe_mode()
+                self._selection_observation(config=True)
+            elif 'currentModelId' in value and self._selection['source'][0] == 'legacy':
+                self.session.setdefault('models', {})['currentModelId'] = value['currentModelId']
+                self._selection_observation()
+            while not self._selection['fresh']:
+                frame = self._next()  # Existing absolute deadline, strict parser.
+                if 'method' not in frame:
+                    raise ACPError('ACP_UNEXPECTED_RESPONSE')
+                self._event(frame)
+            self._drain_controls()
+            self._safe_mode()
+            self.model_id = model_id
+            self._model_source = self._selection['source']
+            self._check_model()
+            return {'model_id':model_id, 'readback_confirmed':True}
+        except BaseException:
+            self.fault = self.fault or 'ACP_MODEL_UNVERIFIED'
+            self.close()
+            raise
+        finally:
+            self._selection = None
 
     def _check_model(self):
         if self.model_id is None or self._model_source is None:
@@ -419,6 +530,15 @@ class ACPClient:
             raise ACPError('ACP_PERMISSION_MODE_UNVERIFIED')
 
     def _event(self, frame):
+        if self.fault:
+            raise ACPError(self.fault)
+        try:
+            return self._apply_event(frame)
+        except ACPError as exc:
+            self.fault = exc.code
+            raise
+
+    def _apply_event(self, frame):
         method, params = frame.get('method'), frame.get('params')
         if not isinstance(params, dict):
             raise ACPError('ACP_INVALID_EVENT')
@@ -456,21 +576,66 @@ class ACPClient:
         if kind == 'current_mode_update':
             self.session.setdefault('modes', {})['currentModeId'] = update.get('currentModeId')
             self._pin_mode_sources()
-            if self._active_prompt:
-                self._safe_mode()
+            self._safe_mode()
+        elif kind == 'model_update':
+            # Fixed native catalog notification: a complete legacy snapshot.
+            identifiers = self._legacy_catalog(update)
+            current = update.get('currentModelId')
+            if not isinstance(current, str) or not current or current not in identifiers:
+                raise ACPError('ACP_MODEL_UNVERIFIED')
+            self.session['models'] = {'availableModels':update['availableModels'],
+                                      'currentModelId':current}
+            if self._selection is not None:
+                pending = self._selection
+                if pending['target'] not in identifiers:
+                    raise ACPError('ACP_MODEL_CHANGED')
+                if pending['source'][0] == 'config':
+                    if current != pending['target']:
+                        if pending['acked']:
+                            raise ACPError('ACP_MODEL_CHANGED')
+                        pending['fresh'] = False
+                    # Matching legacy state cannot certify a config source.
+                else:
+                    self._selection_observation()
+            if self.model_id is not None:
+                if current != self.model_id or self.model_id not in identifiers:
+                    raise ACPError('ACP_MODEL_CHANGED')
+                self._check_model()
         elif kind == 'current_model_update':
-            self.session.setdefault('models', {})['currentModelId'] = update.get('currentModelId')
+            current = update.get('currentModelId')
+            identifiers = self._legacy_catalog(self.session.get('models'))
+            if not isinstance(current, str) or not current or current not in identifiers:
+                raise ACPError('ACP_MODEL_UNVERIFIED')
+            self.session['models']['currentModelId'] = current
+            if self._selection is not None:
+                if self._selection['source'][0] == 'config':
+                    if current != self._selection['target']:
+                        if self._selection['acked']:
+                            raise ACPError('ACP_MODEL_CHANGED')
+                        self._selection['fresh'] = False
+                else:
+                    self._selection_observation()
             if self.model_id is not None:
                 if update.get('currentModelId') != self.model_id:
                     raise ACPError('ACP_MODEL_CHANGED')
                 self._check_model()
         elif kind == 'config_option_update':
-            self.session['configOptions'] = update.get('configOptions', [])
+            if 'configOptions' not in update:
+                raise ACPError('ACP_INVALID_OPTIONS')
+            self.session['configOptions'] = update['configOptions']
+            self._safe_mode()
+            self._observe_config_snapshot()
+            if self._selection is not None:
+                self._selection_observation(config=True)
+            elif self.model_id is not None and self._model_source[0] == 'legacy':
+                option = self._model_option()
+                if option is None:
+                    raise ACPError('ACP_MODEL_CHANGED')
+                self._model_source = ('config', option.get('id'))
             self._pin_mode_sources()
             if self.model_id is not None:
                 self._check_model()
-            if self._active_prompt:
-                self._safe_mode()
+            self._safe_mode()
         elif kind == 'agent_message_chunk':
             if not self._active_prompt:
                 raise ACPError('ACP_LATE_MESSAGE')

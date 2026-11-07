@@ -29,6 +29,11 @@ for line in sys.stdin:
         send({'id':rid,'result':result})
     elif method in ('session/set_model','session/set_config_option'):
         selected=params.get('modelId',params.get('value'))
+        if mode in ('ack_config_after','ack_config_before'):
+            if mode == 'ack_config_before':update('config_option_update',configOptions=options(selected))
+            send({'id':rid,'result':{'modelId':selected}})
+            if mode == 'ack_config_after':update('config_option_update',configOptions=options(selected))
+            continue
         if mode=='late':update('agent_message_chunk',content={'type':'text','text':'old'})
         if mode=='mismatch':selected='wrong'
         if mode in ('config','config_removed','config_ambiguous','config_mode_removed','config_mode_ambiguous','config_mode_changed'):send({'id':rid,'result':{'configOptions':options(selected)}})

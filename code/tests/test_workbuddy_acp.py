@@ -25,6 +25,13 @@ class ACPTests(unittest.TestCase):
         self.assertEqual(result['model_id'],'fake-a');self.assertEqual(self.count.read_text(),'1')
         with self.assertRaises(ACPError):c.prompt('again',lambda:None)
         self.assertFalse(c.close()['descendants_stopped'])
+    def test_echo_ack_and_full_config_both_subprocess_orders(self):
+        for order in ('ack_config_before','ack_config_after'):
+            with self.subTest(order=order):
+                c=self.ready(order)
+                self.assertEqual(c._model_source,('config','model'))
+                self.assertFalse(self.count.exists())  # Selection never prompts.
+
     def test_config_model_readback(self):
         c=self.ready('config');self.assertEqual(c.model_id,'fake-a')
     def test_empty_ack_and_model_mismatch_fail(self):
@@ -44,8 +51,8 @@ class ACPTests(unittest.TestCase):
         with self.assertRaises(ACPError):c.prompt('test',lambda:None)
         self.assertFalse(self.count.exists())
     def test_unsafe_mode_blocks_prompt(self):
-        c=self.ready('unsafe')
-        with self.assertRaises(ACPError):c.prompt('test',lambda:None)
+        c=self.client('unsafe');c.initialize()
+        with self.assertRaises(ACPError):c.new_session()
         self.assertFalse(self.count.exists())
     def test_permission_once_and_reject(self):
         for decision in ('allow_once','reject_once'):
