@@ -46,3 +46,16 @@
 已获准的下一步仍是同一官方版本、无账户的相同 `initialize`，仅增加 EOF 后原总 deadline 内的有界自然退出/Job 计数观察，以及本次新建临时目录内明确日志位置的白名单错误分类。日志仅在本次 owned Job 停止、读取线程结束且清理成功后读取；不扫描账号或配置 store，不跟随链接/重解析点，不导出原始日志、文件名、路径或任意异常文本。分类结果、计数、字节数和摘要不能替代成功协议响应，也不能证明已建立真实认证。禁止凭猜测添加 owner/bootstrap/region 参数、放开 breakaway 或重发请求。
 
 实际结果以精确提交对应的 CI 和独立报告为准。即便 help/initialize 都通过，也不能证明登录继承、模型选择、真实调用、原生工具停止或整链使用无障碍。
+
+## 有界诊断的实际结果
+
+精确提交 `66b7b077ce96bd62e220f0eefc328dc1a40ae83d` 的
+[官方 Windows 诊断 CI](https://github.com/meta-xucong/native-harness-api/actions/runs/42405786723)
+仍为 `INITIALIZE_EOF`，stdout/stderr 0 字节；新增证据是清理前自然 exit 0、
+Job 计数 `[0,0]`，允许的确切日志候选中 files=[]。这不证明其他路径没有日志，
+不定位为认证拒绝或事件循环错误，更不是 ACP 接通。30 个诊断 fixture 及
+23 个真实 Windows Job 测试通过（另 1 非 Windows guard 跳过）。两套普通
+Windows matrix 各 214 PASS / 1 SKIP，Ubuntu 各 196 PASS / 19 SKIP。
+独立核对过原日志与 928 字节 summary 工件，SHA256
+`decead26ab3eca9e1445e8387cce9045600d39e0cbe79dc6d07a7de371c0934e`。
+上述数字只属于该提交，不覆盖后续改动，也不包含账户/模型验收。

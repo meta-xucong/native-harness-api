@@ -27,7 +27,7 @@ class ACPClient:
     MAX_TEXT = 262144
     SAFE_MODES = frozenset({'default'})
 
-    def __init__(self, command, cwd, env, timeout=120.0, permission_handler=None):
+    def __init__(self, command, cwd, env, timeout=120.0, permission_handler=None, *, supervised=False):
         if (not isinstance(command, list) or not command or
                 any(not isinstance(x, str) or not x or '\x00' in x for x in command)):
             raise ValueError('Explicit argv required')
@@ -35,11 +35,23 @@ class ACPClient:
             raise ValueError('Explicit environment required')
         if isinstance(timeout, bool) or not isinstance(timeout, (float, int)) or not math.isfinite(timeout) or not 0 < timeout <= 3600:
             raise ValueError('Invalid timeout')
+        if type(supervised) is not bool:
+            raise ValueError('Explicit supervision choice required')
         self.command, self.cwd, self.env = list(command), Path(cwd).resolve(strict=True), dict(env)
         if not self.cwd.is_dir():
             raise ValueError('Working directory required')
         self.timeout, self.permission_handler = timeout, permission_handler
         self.process = None
+        # The existing experimental probe retains its original host-only path.
+        # Explicit supervision has no Popen or platform fallback and is not a
+        # production admission switch. It never proves external work stopped.
+        self.supervised = supervised
+        self._transport = None
+        self._start_attempted = False
+        self._closing = False
+        self._lifecycle_lock = threading.RLock()
+        self._io_lock = threading.Lock()
+        self._io_threads = []
         self.deadline = None
         self.frames = queue.Queue(maxsize=256)
         self.fault = None
@@ -63,6 +75,8 @@ class ACPClient:
     def _remaining(self):
         if self.fault:
             raise ACPError(self.fault)
+        if self._closing:
+            raise ACPError('ACP_CLOSED')
         remaining = self.deadline - time.monotonic()
         if remaining <= 0:
             self.fault = 'ACP_TIMEOUT'
@@ -91,31 +105,61 @@ class ACPClient:
         except queue.Full:
             self.fault = 'ACP_OUTPUT_LIMIT'
         except Exception:
-            self.fault = 'ACP_IO_ERROR'
+            if not self._closing:
+                self.fault = 'ACP_IO_ERROR'
+
+    def _start_io(self, target, args=()):
+        # Closing seals registration before taking its thread snapshot. There
+        # must not be a late writer after cleanup was reported complete.
+        with self._io_lock:
+            if self._closing:
+                raise ACPError('ACP_CLOSED')
+            thread = threading.Thread(target=target, args=args, daemon=True)
+            # Register BEFORE starting. An asynchronous exception can interrupt
+            # Thread.start or the following confirmation; retain that ambiguity.
+            record = {'thread': thread, 'start_confirmed': False}
+            self._io_threads.append(record)
+            thread.start()
+            record['start_confirmed'] = True
+        return thread
 
     def start(self):
-        if self.process is not None:
-            raise ACPError('ACP_ALREADY_STARTED')
-        self.deadline = time.monotonic() + self.timeout
-        try:
-            self.process = subprocess.Popen(self.command, cwd=self.cwd, env=self.env,
-                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                shell=False, bufsize=0)
-        except Exception:
-            self.fault = 'ACP_LAUNCH_FAILED'
-            raise ACPError(self.fault) from None
-        for stream, stderr in ((self.process.stdout, False), (self.process.stderr, True)):
-            threading.Thread(target=self._reader, args=(stream, stderr), daemon=True).start()
-        return {'pid': self.process.pid, 'host_started': True}
+        with self._lifecycle_lock:
+            if self._start_attempted or self._closing:
+                raise ACPError('ACP_ALREADY_STARTED')
+            self._start_attempted = True
+            self.deadline = time.monotonic() + self.timeout
+            try:
+                if self.supervised:
+                    from .supervised_acp_transport import SupervisedACPTransport
+                    self._transport = SupervisedACPTransport()
+                    started = self._transport.start(self.command, self.cwd, self.env)
+                    streams = self._transport
+                else:
+                    self.process = subprocess.Popen(self.command, cwd=self.cwd, env=self.env,
+                        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                        shell=False, bufsize=0)
+                    streams = self.process
+                    started = {'pid': self.process.pid, 'host_started': True}
+                for stream, stderr in ((streams.stdout, False), (streams.stderr, True)):
+                    self._start_io(self._reader, (stream, stderr))
+            except BaseException:
+                self.fault = 'ACP_LAUNCH_FAILED'
+                self.close()
+                raise ACPError(self.fault) from None
+            return started
 
-    def _bounded_call(self, callback):
+    def _bounded_call(self, callback, *, io=False):
         result = queue.Queue(maxsize=1)
         def run():
             try:
                 result.put((True, callback()))
             except BaseException:
                 result.put((False, None))
-        threading.Thread(target=run, daemon=True).start()
+        if io:
+            self._start_io(run)
+        else:
+            threading.Thread(target=run, daemon=True).start()
         try:
             ok, value = result.get(timeout=self._remaining())
         except queue.Empty:
@@ -131,14 +175,15 @@ class ACPClient:
         if len(data) > self.MAX_FRAME:
             raise ACPError('ACP_FRAME_LIMIT')
         def write():
+            stream = self._transport.stdin if self.supervised else self.process.stdin
             view = memoryview(data)
             while view:
-                count = self.process.stdin.write(view)
+                count = stream.write(view)
                 if not count:
                     raise OSError('closed')
                 view = view[count:]
-            self.process.stdin.flush()
-        self._bounded_call(write)
+            stream.flush()
+        self._bounded_call(write, io=True)
 
     def _next(self):
         while True:
@@ -182,7 +227,7 @@ class ACPClient:
             self._event(frame)
 
     def _rpc(self, method, params, before_send=None):
-        if self.process is None or self.prompt_attempted and method != 'session/prompt':
+        if self._closing or (self.process is None and self._transport is None) or self.prompt_attempted and method != 'session/prompt':
             raise ACPError('ACP_INVALID_STATE')
         self._counter += 1
         request_id = self._counter
@@ -467,6 +512,39 @@ class ACPClient:
             self._active_prompt = False
 
     def close(self):
+        with self._lifecycle_lock:
+            with self._io_lock:
+                self._closing = True
+                threads = tuple(self._io_threads)
+            if self.supervised:
+                deadline = time.monotonic() + 5
+                if self._transport is None:
+                    evidence = {'host_exited': None, 'owned_job_empty': None,
+                                'handles_closed': True, 'cleanup_complete': True}
+                else:
+                    evidence = self._transport.close(timeout=max(0, deadline-time.monotonic()))
+                stopped = True
+                for record in threads:
+                    thread = record['thread']
+                    if not record['start_confirmed'] and thread.ident is None:
+                        # A not-yet-visible native thread may still start. Lack
+                        # of ident/is_alive is not proof it never existed.
+                        stopped = False
+                        continue
+                    try:
+                        thread.join(timeout=max(0, deadline-time.monotonic()))
+                        if thread.is_alive():
+                            stopped = False
+                    except RuntimeError:
+                        # Includes an interrupted/unconfirmed start and current
+                        # thread joins. Retain the record for later observation.
+                        stopped = False
+                return {**evidence, 'io_threads_stopped': stopped,
+                        'cleanup_complete': evidence['cleanup_complete'] is True and stopped,
+                        'descendants_stopped': False}
+            return self._close_host()
+
+    def _close_host(self):
         process = self.process
         if process is None:
             return {'host_exited':True,'descendants_stopped':False}

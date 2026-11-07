@@ -50,3 +50,19 @@ v0.2 第 5.2 节将 run-reported model 规定为“可用时”，第 5.3 节区
 先完成官方发行物/协议证据和上述组件审计，再决定真实 Adapter 的最小版本化合同。普通 CC 分流、配对和打包必须服务于已证实入口，不先建外围平台掩盖原生不可行性。
 
 云端可完成源码和合成故障测试，不可能由这些结果推出用户真实登录、厂商调用或真实生产链已通过。凡必须用户机器、真实账号或实际模型请求的验收，只向协调者列具体需要、范围和费用风险；未获相应授权不执行。无法满足的条件如实保持阻断，不让用户替代开发或审计，也不以“已无障碍”包装待验证实验。
+
+## 五、可自主推进的受监督 ACP 接缝与替代入口结论
+
+本轮仅将独立 owned Job 组件接入 ACPClient 的显式内部选项。默认 probe
+行为及三仓 synthetic 准入保持不变，不增加真实启动开关。启动一次且失败
+也消耗启动权；start/close 串行；关闭时封闭新 IO 线程注册，使用同一个
+五秒等待预算回收 Job 并 join 读写线程。分别输出 owned_job_empty、
+host_exited、handles_closed、io_threads_stopped、cleanup_complete；
+不输出或推导 stopped_confirmed，不解锁 Bridge 槽，不改变模型/终态合同。
+没有 owner 或任一清理不确定时保持未知；保留 owner 只用于清理重试，不重启。
+跨平台单测与实际 Windows 合成进程测试分开，未运行的不能借用旧 Job 测试。
+
+公开替代入口核对结果见 [入口比较](../code/docs/WORKBUDDY_ENTRY_ALTERNATIVES.md)。
+官方 Local Assistant 确实驱动 PC WorkBuddy，但公开消息 API 缺模型/目标电脑/
+独立请求终态等合同，不能为满足交付而静默换成同名“模型渠道”。保留原目标，
+不新建不解决目标缺口的 OAuth 服务，不要求用户代做内部架构选型。
