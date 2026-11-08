@@ -142,9 +142,9 @@ class NodePolicy:
 
     def __post_init__(self):
         try:
-            if self.mode not in {"p1b_integration", "workbuddy_local_trial"}:
+            if self.mode not in {"p1b_integration", "workbuddy_local_trial", "harness_local_trial"}:
                 raise ValueError()
-            if self.mode == "workbuddy_local_trial" and len(self.allowed_owners) != 1:
+            if self.mode in {"workbuddy_local_trial", "harness_local_trial"} and len(self.allowed_owners) != 1:
                 raise ValueError()
             identifier(self.source)
             identifier(self.ledger_instance)
@@ -162,7 +162,7 @@ class NodePolicy:
                     raise ValueError()
                 # Revalidate even an object constructed through unsafe reflection.
                 Binding(**binding.wire())
-                if self.mode == "workbuddy_local_trial" and (not binding.model_alias.startswith("workbuddy-") or binding.native_model.startswith("fake-")):
+                if self.mode in {"workbuddy_local_trial", "harness_local_trial"} and (not binding.model_alias.startswith(("workbuddy-", "codex-") if self.mode == "harness_local_trial" else ("workbuddy-",)) or binding.native_model.startswith("fake-")):
                     raise ValueError()
             fingerprints = [digest(binding.wire()) for binding in self.bindings]
             if len(set(fingerprints)) != len(fingerprints):
@@ -200,7 +200,7 @@ class NodePolicy:
             if not isinstance(frozen, dict) or set(frozen) != {'binding', 'messages', 'client_request'}:
                 raise ValueError()
             client = normalize_request(frozen['client_request'])
-            if self.mode == "workbuddy_local_trial" and (len(client["messages"]) != 1 or client["messages"][0]["role"] != "user"):
+            if self.mode in {"workbuddy_local_trial", "harness_local_trial"} and (len(client["messages"]) != 1 or client["messages"][0]["role"] != "user"):
                 raise ValueError()
             if canonical(frozen['client_request']) != canonical(client):
                 raise ValueError()

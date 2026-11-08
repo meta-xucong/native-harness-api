@@ -38,3 +38,9 @@ class ClientLauncherTests(unittest.TestCase):
   seen=[];module=types.SimpleNamespace(main=lambda args:seen.append(args) or 0)
   with patch.dict(sys.modules,{'public_harness_preflight':module}):self.assertEqual(client.main(['preflight','--config','C:/node.json']),0)
   self.assertEqual(seen,[['--config','C:/node.json']])
+
+ def test_workbuddy_target_pair_forwarded(self):
+  seen=[];module=types.SimpleNamespace(main=lambda args:seen.append(args) or 0)
+  with patch.dict(sys.modules,{'public_harness_models':module}):
+   self.assertEqual(client.main(['models','--profile','C:/profile','--target-model','native','--public-alias','workbuddy-test']),0)
+  self.assertEqual(seen[0][-4:],['--target-model','native','--public-alias','workbuddy-test'])

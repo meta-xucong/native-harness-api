@@ -19,7 +19,7 @@ class Service:
 
 class Facade:
     def __init__(self, services, *, wait_seconds=0.2, poll_seconds=0.01, mode="disabled"):
-        if mode not in {"offline_prototype", "p1b_integration", "workbuddy_local_trial"}:
+        if mode not in {"offline_prototype", "p1b_integration", "workbuddy_local_trial", "harness_local_trial"}:
             raise ValueError("Explicit test mode required; production is disabled")
         if not services or not 0 <= wait_seconds <= 30 or not 0.001 <= poll_seconds <= 1:
             raise ValueError("Invalid facade configuration")
@@ -27,7 +27,7 @@ class Facade:
             if not isinstance(token, str) or len(token) < 16 or not isinstance(service, Service):
                 raise ValueError("Explicit service credentials required")
             self.validated_bindings(service, mode)
-        if mode == "workbuddy_local_trial" and len(services) != 1:
+        if mode in {"workbuddy_local_trial", "harness_local_trial"} and len(services) != 1:
             raise ValueError("Local trial requires exactly one service/owner")
         self.services = dict(services)
         self.mode = mode
@@ -38,7 +38,7 @@ class Facade:
         if not isinstance(service, Service) or not isinstance(service.bindings, Mapping) or type(service.accepting_new) is not bool:
             raise ValueError("Invalid service configuration")
         identifier(service.source)
-        trial = mode == "workbuddy_local_trial"
+        trial = mode in {"workbuddy_local_trial", "harness_local_trial"}
         if trial:
             if type(service.owner) is not tuple or len(service.owner) != 2:
                 raise ValueError("Local trial requires one explicit owner")
@@ -48,7 +48,7 @@ class Facade:
         for alias, binding in values.items():
             if (not isinstance(alias, str) or not isinstance(binding, Binding)
                     or alias != binding.model_alias
-                    or not alias.startswith("workbuddy-" if trial else "synthetic-")
+                    or not alias.startswith(("workbuddy-", "codex-") if mode == "harness_local_trial" else ("workbuddy-" if trial else "synthetic-"))
                     or (binding.native_model.startswith("fake-") if trial else not binding.native_model.startswith("fake-"))):
                 raise ValueError("Binding keys and model aliases must match the explicit execution mode")
         return values
@@ -68,17 +68,17 @@ class Facade:
             raise ChannelError("INVALID_SERVICE_CONFIGURATION", 503) from None
         if method == "GET" and path == "/v1/models":
             models = sorted(bindings) if service.accepting_new else []
-            owner = "workbuddy-local-trial" if self.mode == "workbuddy_local_trial" else ("p1a-synthetic" if self.mode == "offline_prototype" else "p1b-synthetic")
+            owner = self.mode.replace("_", "-") if self.mode in {"workbuddy_local_trial", "harness_local_trial"} else ("p1a-synthetic" if self.mode == "offline_prototype" else "p1b-synthetic")
             return 200, {"object": "list", "data": [{"id": m, "object": "model", "owned_by": owner} for m in models]}, {}
         if method != "POST" or path not in {"/v1/chat/completions", "/v1/native-harness/events"}:
             raise ChannelError("NOT_FOUND", 404)
-        if self.mode in {"p1b_integration", "workbuddy_local_trial"}:
+        if self.mode in {"p1b_integration", "workbuddy_local_trial", "harness_local_trial"}:
             if (single_header(headers, "X-Native-Source") != service.source
                     or single_header(headers, "X-Native-Ledger") != service.bridge.ledger_instance):
                 raise ChannelError("FROZEN_ROUTE_MISMATCH", 409, accepted=False)
         identity = Identity(service.source, single_header(headers, "X-Native-Tenant"),
                             single_header(headers, "X-Native-Principal"), single_header(headers, "X-Native-Operation"))
-        if self.mode == "workbuddy_local_trial" and (identity.tenant, identity.principal) != service.owner:
+        if self.mode in {"workbuddy_local_trial", "harness_local_trial"} and (identity.tenant, identity.principal) != service.owner:
             raise ChannelError("FORBIDDEN", 403, accepted=False)
         admission = single_header(headers, "X-Native-Admission-Allowed")
         frozen_binding = single_header(headers, "X-Native-Binding-Digest")
@@ -97,7 +97,7 @@ class Facade:
         task = service.bridge.lookup(identity.origin_key)
         replay = task is not None
         if task is None:
-            if self.mode == "workbuddy_local_trial" and (len(request["messages"]) != 1 or request["messages"][0]["role"] != "user"):
+            if self.mode in {"workbuddy_local_trial", "harness_local_trial"} and (len(request["messages"]) != 1 or request["messages"][0]["role"] != "user"):
                 raise ChannelError("LOCAL_TRIAL_SINGLE_USER_MESSAGE_REQUIRED", 400, accepted=False)
             if not service.accepting_new or admission != "true":
                 raise ChannelError("NEW_ADMISSION_DISABLED", 503, accepted=False)

@@ -11,17 +11,25 @@ from urllib.parse import urlsplit
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
 from native_harness_api.contracts import Binding, identifier, digest
 from native_harness_api.native_bindings import validate_bindings
+from native_harness_api.harness_registry import parse_targets, profile_path
 from native_harness_api.bridge_client import origin
 from native_harness_api.native_facade_runtime import NativeFacadeConfig
 
 SPEC_KEYS = {'bridge_origin', 'user_id', 'api_key_id', 'model_alias', 'native_model',
              'windows_bundle_root', 'windows_profile_root', 'bridge_data_dir'}
 
+V2_SPEC_KEYS = {"schema_version", "bridge_origin", "user_id", "api_key_id",
+                "windows_data_dir", "bridge_data_dir", "targets"}
+
 
 def build_plan(spec, identities=None):
     multi_keys = (SPEC_KEYS - {'model_alias', 'native_model'}) | {'models'}
-    if type(spec) is not dict or set(spec) not in (SPEC_KEYS, multi_keys):
+    if type(spec) is not dict or set(spec) not in (SPEC_KEYS, multi_keys, V2_SPEC_KEYS):
         raise ValueError('Exact deployment specification required')
+    v2 = set(spec) == V2_SPEC_KEYS
+    if v2 and (type(spec['schema_version']) is not int or spec['schema_version'] != 2):
+        raise ValueError('Explicit schema version 2 required')
+    mode = 'harness_local_trial' if v2 else 'workbuddy_local_trial'
     remote = spec['bridge_origin']; origin(remote)
     parsed = urlsplit(remote)
     if parsed.scheme != 'https' or not parsed.hostname or parsed.hostname in ('localhost', '127.0.0.1', '::1'):
@@ -29,61 +37,78 @@ def build_plan(spec, identities=None):
     for key in ('user_id', 'api_key_id'):
         if type(spec[key]) is not int or not 0 < spec[key] < 2**63:
             raise ValueError('Actual positive numeric Sub2API IDs required')
-    for key in ('windows_bundle_root', 'windows_profile_root'):
-        value = spec[key]
-        if (type(value) is not str or not re.fullmatch(r'[A-Za-z]:[\\/].+', value)
-                or '..' in PureWindowsPath(value).parts or any(ord(c) < 32 for c in value)):
-            raise ValueError('Absolute Windows fixed-drive paths required')
-    multi = 'models' in spec
-    models = spec['models'] if multi else [{k:spec[k] for k in ('model_alias','native_model')}]
-    if type(models) is not list or not 1 <= len(models) <= 32:
-        raise ValueError('One to 32 model mappings required')
-    for model in models:
-        if type(model) is not dict or set(model) != {'model_alias','native_model'}:
-            raise ValueError('Exact model mappings required')
-        for value in model.values():
-            if type(value) is not str or any(c in value for c in '<>'):
-                raise ValueError('Choose real model IDs, not placeholders')
+    if v2:
+        targets = parse_targets(spec['targets'])
+        node_data = profile_path(spec['windows_data_dir'])
+        multi = True
+    else:
+        for key in ('windows_bundle_root', 'windows_profile_root'):
+            value = spec[key]
+            if (type(value) is not str or not re.fullmatch(r'[A-Za-z]:[\\/].+', value)
+                    or '..' in PureWindowsPath(value).parts or any(ord(c) < 32 for c in value)):
+                raise ValueError('Absolute Windows fixed-drive paths required')
+        multi = 'models' in spec
+        models = spec['models'] if multi else [{k:spec[k] for k in ('model_alias','native_model')}]
+        if type(models) is not list or not 1 <= len(models) <= 32:
+            raise ValueError('One to 32 model mappings required')
+        for model in models:
+            if type(model) is not dict or set(model) != {'model_alias','native_model'}:
+                raise ValueError('Exact model mappings required')
+            for value in model.values():
+                if type(value) is not str or any(c in value for c in '<>'):
+                    raise ValueError('Choose real model IDs, not placeholders')
     state = spec['bridge_data_dir']
     if type(state) is not str or not state.startswith('/') or '..' in Path(state).parts or any(ord(c) < 32 for c in state):
         raise ValueError('Explicit absolute Linux Bridge state path required')
-    identities = identities or {name: name+'-'+uuid.uuid4().hex for name in ('source','ledger','workspace','node','executor','binding')}
+    if identities is None:
+        identities = {name: name+'-'+uuid.uuid4().hex for name in ('source','ledger','workspace','node','executor','binding')}
     if set(identities) != {'source','ledger','workspace','node','executor','binding'}:
         raise ValueError('Invalid deployment identities')
     for value in identities.values(): identifier(value)
-    bindings = validate_bindings(tuple(Binding(
-        ('binding-'+digest({'seed':identities['binding'],'alias':m['model_alias']})[:32]) if multi else identities['binding'],
-        1, m['model_alias'], m['native_model']) for m in models))
+    if v2:
+        bindings = tuple(t.binding for t in targets)
+    else:
+        bindings = validate_bindings(tuple(Binding(
+            ('binding-'+digest({'seed':identities['binding'],'alias':m['model_alias']})[:32]) if multi else identities['binding'],
+            1, m['model_alias'], m['native_model']) for m in models))
     binding_wires = [b.wire() for b in bindings]
     owner = ['user-'+str(spec['user_id']), 'key-'+str(spec['api_key_id'])]
-    common = {'mode':'workbuddy_local_trial', 'source':identities['source'], 'ledger_instance':identities['ledger'],
+    common = {'mode':mode, 'source':identities['source'], 'ledger_instance':identities['ledger'],
               'bridge_url':remote, 'owner':owner, 'accepting_new':False}
     common.update({'bindings':binding_wires} if multi else {'binding':binding_wires[0]})
+    if v2:
+        common['schema_version'] = 2
     facade = dict(common, adapter='facade_only', port=8790)
     NativeFacadeConfig.from_value(facade)
-    node = dict(common, adapter='public_sfe', assets_root=str(PureWindowsPath(spec['windows_bundle_root'])/'assets'),
-                profile_root=spec['windows_profile_root'], execution_timeout=120, cleanup_timeout=10)
+    if v2:
+        node = {k:v for k,v in common.items() if k != 'bindings'}
+        node.update(data_dir=node_data, targets=[dict(recipe=dict(t.recipe), binding=t.binding.wire(),
+                    assets_root=t.assets_root) for t in targets], execution_timeout=120, cleanup_timeout=10)
+    else:
+        node = dict(common, adapter='public_sfe', assets_root=str(PureWindowsPath(spec['windows_bundle_root'])/'assets'),
+                    profile_root=spec['windows_profile_root'], execution_timeout=120, cleanup_timeout=10)
     bridge = {'data_dir':state, 'source_id':identities['source'], 'workspace_id':identities['workspace'],
               'node_id':identities['node'], 'executor_instance':identities['executor'],
               'host':'127.0.0.1', 'port':8787, 'dispatch_mode':'node_pull', 'enabled_profiles':['fake-image'],
               'accepting_new_tasks':False, 'harness':{'ledger_instance':identities['ledger'], 'allowed_owners':[owner],
-              'bindings':binding_wires, 'accepting_new':False, 'execution_mode':'workbuddy_local_trial'}}
+              'bindings':binding_wires, 'accepting_new':False, 'execution_mode':mode}}
     routes = {}
     for binding in binding_wires:
-        routes[binding['model_alias']] = {'execution_mode':'workbuddy_local_trial','origin':'http://127.0.0.1:8790',
+        routes[binding['model_alias']] = {'execution_mode':mode,'origin':'http://127.0.0.1:8790',
              'credential_env':'NATIVE_FACADE_SERVICE_TOKEN','source':identities['source'],
              'ledger_instance':identities['ledger'], **binding}
     sub2api = {'gateway':{'native_harness':{'enabled':True,'accepting_new':False,'standard_api':False,'standard_wait_seconds':180,'allowed_user_id':spec['user_id'],
                'allowed_api_key_id':spec['api_key_id'],'routes':routes}}}
     return {'bridge.json':bridge, 'facade.json':facade, 'windows-node.json':node,
             'sub2api.native-harness.yaml':sub2api,
-            'deployment-identities.json':{'schema_version':1, 'identities':identities, 'specification':spec,
+            'deployment-identities.json':{'schema_version':2 if v2 else 1, 'identities':identities, 'specification':spec,
              'warning':'Preserve this identity set and the existing Bridge/Sub2API/Node ledgers. Never regenerate to retry an uncertain operation.'}}
 
 
 def write_plan(output, plan):
     output = Path(output)
-    # No account data/secrets are written; nevertheless never overwrite prior identities.
+    # Local recipes contain public account fingerprints, not credentials. Never
+    # overwrite prior identities; only the server-specific configs leave this host.
     output.mkdir(mode=0o700, parents=False, exist_ok=False)
     for name, value in plan.items():
         with (output/name).open('x', encoding='utf-8', newline='\n') as handle:
@@ -95,9 +120,10 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--spec', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--identities', type=Path, help='Reuse a saved deployment-identities.json for migration')
     args = parser.parse_args(argv)
     try:
-        if args.spec.stat().st_size > 16384: raise ValueError('Specification too large')
+        if args.spec.stat().st_size > 65536: raise ValueError('Specification too large')
         def unique(pairs):
             data={}
             for key,value in pairs:
@@ -105,7 +131,11 @@ def main(argv=None):
                 data[key]=value
             return data
         value=json.loads(args.spec.read_text(encoding='utf-8'),object_pairs_hook=unique)
-        write_plan(args.output,build_plan(value))
+        identities = None
+        if args.identities is not None:
+            if args.identities.stat().st_size > 65536: raise ValueError('Saved identities too large')
+            identities = json.loads(args.identities.read_text(encoding='utf-8'),object_pairs_hook=unique)['identities']
+        write_plan(args.output,build_plan(value, identities))
         print('Matching configs written. Admission remains closed. No credentials, deployment, account access or inference occurred.')
         return 0
     except Exception:

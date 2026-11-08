@@ -175,6 +175,28 @@ class PublicSfeOwnedSession:
             (lambda: self.protocol.prompt(prompt), lambda: self.protocol.coordinator.phase == 'finished'),
         ]
 
+    def _make_protocol(self, **kwargs):
+        return PublicSfeSession(**kwargs)
+
+    def _begin_close(self, deadline):
+        coordinator = self.protocol.coordinator
+        if coordinator.reducer is not None and not coordinator.reducer.evidence()['terminal_observed']:
+            self._send(self.protocol.cancel(), deadline)
+        if coordinator.session_id is not None:
+            if self._send(self.protocol.close_session(), deadline):
+                self._pump_until(lambda: coordinator.close_acknowledged, deadline, honor_turn=False)
+
+    def _before_cleanup(self, natural):
+        pass
+
+    def _cleanup_confirmed(self, cleanup, io_stopped, zero):
+        return zero and self.eof and self.stderr_eof and self.stdin_eof_sent and io_stopped and all(
+            cleanup.get(key) is True for key in ('host_exited', 'owned_job_empty', 'handles_closed', 'cleanup_complete'))
+
+    def _close_confirmed(self):
+        c = self.protocol.coordinator
+        return c.session_id is None or c.close_acknowledged
+
     def run(self, command, cwd, env, *, workspace, model_id, prompt,
             expected_account_digest, timeout=120, cleanup_timeout=10, cancellation=None, on_event=None):
         if self._attempted:
@@ -186,7 +208,7 @@ class PublicSfeOwnedSession:
         if cancellation is not None and not isinstance(cancellation, threading.Event):
             raise ValueError('THREADING_EVENT_REQUIRED')
         deadline = time.monotonic() + timeout
-        self.protocol = PublicSfeSession(deadline=deadline, expected_account_digest=expected_account_digest, on_event=on_event)
+        self.protocol = self._make_protocol(deadline=deadline, expected_account_digest=expected_account_digest, on_event=on_event)
         if cancellation is not None and cancellation.is_set():
             return {'outcome': 'cancelled', 'fault': None, 'session': self.protocol.evidence(),
                     'launch_attempted': False, 'cleanup_not_required': True,
@@ -223,12 +245,7 @@ class PublicSfeOwnedSession:
             self._send_deadline = graceful_end
             try:
                 if self._io_ready:
-                    coordinator = self.protocol.coordinator
-                    if coordinator.reducer is not None and not coordinator.reducer.evidence()['terminal_observed']:
-                        self._send(self.protocol.cancel(), graceful_end)
-                    if coordinator.session_id is not None:
-                        if self._send(self.protocol.close_session(), graceful_end):
-                            self._pump_until(lambda: coordinator.close_acknowledged, graceful_end, honor_turn=False)
+                    self._begin_close(graceful_end)
                     # Writer owns stdin close, avoiding a blocking close on this
                     # orchestration thread. FIFO ensures no command follows EOF.
                     self._writes.put_nowait(None)
@@ -256,6 +273,7 @@ class PublicSfeOwnedSession:
                 if probe['natural']:
                     natural = True
                     natural_code = probe['exit_code']
+            self._before_cleanup(natural)
             self._closing = True
             try:
                 self._writes.put_nowait(None)
@@ -280,11 +298,10 @@ class PublicSfeOwnedSession:
             self._fail(self._io_fault)
         evidence = self.protocol.evidence()
         zero = natural and type(natural_code) is int and natural_code == 0
-        cleanup_confirmed = zero and self.eof and self.stderr_eof and self.stdin_eof_sent and io_stopped and all(
-            cleanup.get(key) is True for key in ('host_exited', 'owned_job_empty', 'handles_closed', 'cleanup_complete'))
+        cleanup_confirmed = self._cleanup_confirmed(cleanup, io_stopped, zero)
         if not cleanup_confirmed:
             self._fail('CLEANUP_UNCONFIRMED')
-        if self.protocol.coordinator.session_id is not None and not self.protocol.coordinator.close_acknowledged:
+        if not self._close_confirmed():
             self._fail('SESSION_CLOSE_UNCONFIRMED')
         return {'outcome': evidence['outcome'] if not self.fault else 'indeterminate',
                 'fault': self.fault, 'session': evidence, 'launch_attempted': True,

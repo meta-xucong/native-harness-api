@@ -5,6 +5,8 @@ on:
     paths:
       - 'code/src/native_harness_api/**'
       - 'code/tests/**'
+      - 'code/tools/codex_*.py'
+      - 'code/tools/prepare_native_deployment.py'
       - 'code/tools/public_harness_login*.py'
       - 'code/tools/public_harness_models.py'
       - 'code/tools/public_harness_preflight.py'
@@ -16,6 +18,9 @@ on:
       - 'code/packaging/client.py'
       - 'code/packaging/Client.cmd'
       - 'code/packaging/CLIENT-README.zh-CN.md'
+      - 'code/packaging/CODEX-*'
+      - 'code/packaging/codex-client-config.example.json'
+      - 'code/docs/MULTI-HARNESS-CONFIG.md'
       - '.github/workflows/windows-client.yml'
 permissions:
   contents: read
@@ -86,8 +91,29 @@ jobs:
           & "$root/unpacked/runtime/python.exe" -I "$root/unpacked/client.py" verify-assets
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           Get-FileHash "$root/native-harness-windows-x64.zip" -Algorithm SHA256 | Format-List
+      - name: Build Codex selection from pinned data only (never execute vendor)
+        shell: pwsh
+        run: |
+          $root = Join-Path $env:RUNNER_TEMP 'native-client-package'
+          python code/tools/codex_assets.py --download --archive "$root/codex.tar.gz" --target "$root/codex-assets"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python code/packaging/build_client.py --harness codex --assets-root "$root/codex-assets" --runtime-zip "$root/python.zip" --output "$root/native-harness-codex-windows-x64.zip" --source-revision (git rev-parse HEAD)
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Expand-Archive -LiteralPath "$root/native-harness-codex-windows-x64.zip" -DestinationPath "$root/codex-unpacked"
+          & "$root/codex-unpacked/Client.cmd" --help
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & "$root/codex-unpacked/runtime/python.exe" -I "$root/codex-unpacked/client.py" login --explain
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & "$root/codex-unpacked/runtime/python.exe" -I "$root/codex-unpacked/client.py" verify-assets
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Get-FileHash "$root/native-harness-codex-windows-x64.zip" -Algorithm SHA256 | Format-List
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: native-harness-windows-x64-${{ github.sha }}
           path: ${{ runner.temp }}/native-client-package/native-harness-windows-x64.zip
+          if-no-files-found: error
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: native-harness-codex-windows-x64-${{ github.sha }}
+          path: ${{ runner.temp }}/native-client-package/native-harness-codex-windows-x64.zip
           if-no-files-found: error

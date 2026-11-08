@@ -54,7 +54,12 @@ class WindowsTTY:
         self.pending = False
         self.buffer = ''
 
-    def begin(self, action, event=None):
+    def begin_prompt(self, text):
+        """A fresh bounded confirmation, with old console typeahead discarded."""
+        self._prepare_prompt()
+        print(text, flush=True)
+
+    def _prepare_prompt(self):
         require(not self.pending)
         # Discard typeahead before displaying each distinct consent. Never echo it.
         for _ in range(256):
@@ -63,6 +68,9 @@ class WindowsTTY:
             self.console.getwch()
         require(not self.console.kbhit())
         self.buffer = ''; self.pending = True
+
+    def begin(self, action, event=None):
+        self._prepare_prompt()
         if action == 'initial_consent':
             print(EXPLANATION)
             print('Create a NEW retained profile and start the verified native client? Type yes or no:')

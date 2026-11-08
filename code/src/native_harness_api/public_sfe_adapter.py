@@ -58,16 +58,16 @@ def project_result(value, model):
     return result
 
 
-class PublicSfeAdapter:
+class DurableNativeAdapter:
     synthetic = False
     supports_live_events = True
 
-    def __init__(self, root, *, binding=None, bindings=None, invoke, event_horizon=120):
+    def __init__(self, root, *, binding=None, bindings=None, resolve, event_horizon=120):
         if (binding is None) == (bindings is None):
             raise ValueError('Explicit binding or bindings required')
         approved = (binding,) if bindings is None else bindings
         if (type(approved) is not tuple or not 1 <= len(approved) <= 32 or
-                any(type(b) is not Binding for b in approved) or not callable(invoke) or
+                any(type(b) is not Binding for b in approved) or not callable(resolve) or
                 len({b.model_alias for b in approved}) != len(approved) or
                 len({b.binding_id for b in approved}) != len(approved)):
             raise ValueError('Explicit unique bindings and invocation owner required')
@@ -76,7 +76,7 @@ class PublicSfeAdapter:
             raise ValueError('Existing dedicated absolute evidence directory required')
         self.db = self.root / 'sfe-evidence.sqlite'
         self._check_storage()
-        self.bindings, self.invoke = approved, invoke
+        self.bindings, self.resolve = approved, resolve
         self._retained_event_pumps = []
         self.event_horizon = event_horizon
         with self._connect() as con:
@@ -123,6 +123,9 @@ class PublicSfeAdapter:
     def start(self, task, grant, *, publish_event=None):
         task, grant = copy.deepcopy(task), copy.deepcopy(grant)
         task_id, grant_id, fingerprint, request = self._identity(task, grant)
+        # Select both functions from the same immutable binding before intent.
+        # Recovery below never resolves a current target or loads a vendor.
+        invoke, projector = self.resolve(Binding(**task['request']['binding']))
         with self._connect() as con:
             # BEGIN IMMEDIATE serializes cross-process admission before native IO.
             con.execute('BEGIN IMMEDIATE')
@@ -140,8 +143,8 @@ class PublicSfeAdapter:
                 self._retained_event_pumps.append(pump)
             model = task['request']['binding']['native_model']
             options = {} if pump is None else {'on_event': pump.enqueue, 'cancellation': pump.failed}
-            evidence = self.invoke(model_id=model, messages=request['messages'], **options)
-            result = project_result(evidence, model)
+            evidence = invoke(model_id=model, messages=request['messages'], **options)
+            result = projector(evidence, model)
         except Exception:
             result = dict(PENDING)
         if pump is not None:
@@ -160,3 +163,14 @@ class PublicSfeAdapter:
         if row is None: return None
         if row[:2] != (task_id, fingerprint): raise ValueError('Execution identity conflict')
         return json.loads(row[2]) if row[2] is not None else dict(PENDING)
+
+
+class PublicSfeAdapter(DurableNativeAdapter):
+    """Compatibility wrapper: unchanged WorkBuddy evidence and storage contract."""
+    def __init__(self, root, *, binding=None, bindings=None, invoke, event_horizon=120):
+        if not callable(invoke):
+            raise ValueError('Invocation owner required')
+        self.invoke = invoke
+        super().__init__(root, binding=binding, bindings=bindings,
+                         resolve=lambda binding: (invoke, project_result),
+                         event_horizon=event_horizon)

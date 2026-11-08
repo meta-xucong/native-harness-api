@@ -44,6 +44,8 @@ class NativeTrialConfig(RuntimeConfig):
     assets_root: Path = Path('.')
     profile_root: Path = Path('.')
     bindings: tuple[Binding, ...] = ()
+    expected_profile_id: str | None = None
+    expected_account_fingerprint: str | None = None
     execution_timeout: float = 120
     cleanup_timeout: float = 10
 
@@ -122,6 +124,10 @@ class NativeTrialConfig(RuntimeConfig):
         engine = None
         try:
             if profile.state != 'authenticated_confirmed': raise ValueError('Profile not ready')
+            if self.expected_profile_id is not None and profile.root.name != self.expected_profile_id:
+                raise ValueError('Frozen profile mismatch')
+            if self.expected_account_fingerprint is not None and profile.expected_account_digest != self.expected_account_fingerprint:
+                raise ValueError('Frozen account confirmation mismatch')
             assets = verify_assets(self.assets_root)
             expected_account = profile.expected_account_digest
             workspace = profile.root / 'workspace' / ('request-' + uuid.uuid4().hex)

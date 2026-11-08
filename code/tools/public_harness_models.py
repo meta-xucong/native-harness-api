@@ -150,6 +150,18 @@ def discover_models(assets, profile, *, transport=None, timeout=60, cleanup_time
     return result
 
 
+def export_target(result, *, profile_root, profile_id, account_fingerprint, assets_root, native_model, public_alias):
+    """Export a local recipe only after this discovery restored/closed its profile."""
+    require(result.get('success') is True and result.get('cleanup_confirmed') is True
+            and result.get('profile_restored') is True and result.get('profile_closed') is True)
+    require(native_model in {model['id'] for model in result['catalog']['models']})
+    from native_harness_api.harness_registry import make_recipe, binding_for, profile_path
+    recipe = make_recipe(adapter_id='workbuddy.public-sfe.v1', profile_path=str(profile_root),
+        profile_id=profile_id, account_fingerprint=account_fingerprint,
+        native_model=native_model, public_alias=public_alias)
+    return {'recipe': recipe, 'binding': binding_for(recipe).wire(), 'assets_root': profile_path(str(assets_root))}
+
+
 class SafeParser(argparse.ArgumentParser):
     def error(self, message): raise ValueError('ARGUMENTS_REJECTED')
 
@@ -159,8 +171,13 @@ def main(argv=None):
     parser.add_argument('--assets-root',type=Path)
     parser.add_argument('--profile',type=Path)
     parser.add_argument('--explain',action='store_true')
+    parser.add_argument('--target-model')
+    parser.add_argument('--public-alias')
+    exporting = False
     try:
         args = parser.parse_args(argv)
+        require((args.target_model is None) == (args.public_alias is None))
+        exporting = args.target_model is not None
         if args.explain: print(EXPLAIN); return 0
         require(os.name == 'nt' and sys.stdin.isatty() and sys.stdout.isatty() and sys.stderr.isatty())
         require(args.assets_root is not None and args.profile is not None)
@@ -168,16 +185,22 @@ def main(argv=None):
         from public_harness_login_profile import open_profile
         assets = verify_runtime_assets(args.assets_root)
         profile = open_profile(args.profile)
-        print(EXPLAIN)
+        frozen_identity = (profile.root, profile.root.name, profile.expected_account_digest) if exporting else None
+        print(EXPLAIN, file=sys.stderr if exporting else sys.stdout)
         result = discover_models(assets,profile)
-        print('Retained profile: ' + ascii(str(profile.root)))
-        if result['success']:
+        if exporting and result['success']:
+            root, identity, fingerprint = frozen_identity
+            value = export_target(result, profile_root=root, profile_id=identity, account_fingerprint=fingerprint,
+                assets_root=args.assets_root, native_model=args.target_model, public_alias=args.public_alias)
+            print(json.dumps(value, ensure_ascii=False, indent=2))
+        elif result['success']:
+            print('Retained profile: ' + ascii(str(profile.root)))
             print('Native catalog, not a model invocation or entitlement guarantee:')
             for model in result['catalog']['models']:
                 print(model['id'] + '  ' + ascii(model['name']))
             print('Current model: ' + result['catalog']['current_model_id'])
             print('Choose an exact ID for native_model in your local configuration; no binding was written.')
-        else: print('Catalog unavailable. No model binding saved; profile may require reconciliation.')
+        else: print('Catalog unavailable. No model binding saved; profile may require reconciliation.', file=sys.stderr if exporting else sys.stdout)
         while RETAINED:
             try: time.sleep(1)
             except KeyboardInterrupt: continue
@@ -188,7 +211,7 @@ def main(argv=None):
             while RETAINED:
                 try: time.sleep(1)
                 except KeyboardInterrupt: continue
-        print('Catalog not started or unconfirmed; no automatic retry or model binding.')
+        print('Catalog not started or unconfirmed; no automatic retry or model binding.', file=sys.stderr if exporting else sys.stdout)
         return 1
 
 if __name__=='__main__':raise SystemExit(main())

@@ -43,6 +43,12 @@ class RuntimeConfig:
     def load(cls, path):
         with Path(path).open("rb") as handle:
             value = parse_json(handle.read(65_537))
+        if isinstance(value, dict) and value.get("mode") == "harness_local_trial":
+            if value.get("adapter") == "facade_only":
+                from .native_facade_runtime import NativeFacadeConfig
+                return NativeFacadeConfig.from_value(value)
+            from .multi_harness_runtime import MultiHarnessConfig
+            return MultiHarnessConfig.from_value(value)
         if isinstance(value, dict) and value.get("mode") == "workbuddy_local_trial":
             if value.get("adapter") == "facade_only":
                 from .native_facade_runtime import NativeFacadeConfig

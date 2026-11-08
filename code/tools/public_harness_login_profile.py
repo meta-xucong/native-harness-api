@@ -6,6 +6,7 @@ No profile deletion, token import, automatic login or retry exists here.
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
 import ctypes as C
 from functools import wraps
 import json
@@ -23,6 +24,16 @@ LOCK = 'profile.lock'
 PREFIX = 'workbuddy-managed-'
 PINS = dict(executable=EXE_SHA, host_node=NODE_EXE_SHA, product_config=OVERLAY_SHA,
             sfe_tree=SFE_TREE['sha256'], node_tree=NODE_TREE['sha256'])
+
+@dataclass(frozen=True)
+class ProfilePolicy:
+    kind: str
+    prefix: str
+    pins: dict
+
+
+WORKBUDDY_POLICY = ProfilePolicy('public-beta16-cn-managed', PREFIX, PINS)
+
 STATES = frozenset(('fresh', 'login_started', 'authenticated_confirmed', 'unknown_retained',
                     'cancelled_unauthenticated', 'unauthenticated', 'identity_rejected',
                     'execution_started', 'execution_unknown'))
@@ -208,13 +219,13 @@ def _physical(path, security):
     return _identity(_info(path, True))
 
 
-def _check_manifest(data, name, sid):
+def _check_manifest(data, name, sid, policy=WORKBUDDY_POLICY):
     require(type(data) is dict and set(data) == {'schema_version', 'kind', 'profile_id', 'owner_sid',
             'pins', 'state', 'confirmed_account_digest', 'native_encryption_verified', 'browser_isolation_verified'})
     require(type(data['schema_version']) is int and data['schema_version'] == 1
-            and data['kind'] == 'public-beta16-cn-managed' and data['profile_id'] == name
-            and re.fullmatch(PREFIX + r'[0-9a-f]{32}', name) and data['owner_sid'] == sid
-            and data['pins'] == PINS and type(data['state']) is str and data['state'] in STATES)
+            and data['kind'] == policy.kind and data['profile_id'] == name
+            and re.fullmatch(policy.prefix + r'[0-9a-f]{32}', name) and data['owner_sid'] == sid
+            and data['pins'] == policy.pins and type(data['state']) is str and data['state'] in STATES)
     require(data['native_encryption_verified'] is False and data['browser_isolation_verified'] is False)
     digest = data['confirmed_account_digest']
     require((data['state'] in ('authenticated_confirmed', 'execution_started') and type(digest) is str
@@ -234,7 +245,8 @@ def _write_new(path, contents, security):
 
 
 class ManagedProfile:
-    def __init__(self, root, security, data, lock):
+    def __init__(self, root, security, data, lock, policy=WORKBUDDY_POLICY):
+        self.policy = policy
         self.root, self._security, self._data, self._lock = root, security, data, lock
         self._identity = _physical(root, security)
         self._closed = False
@@ -256,7 +268,7 @@ class ManagedProfile:
         lock_path = self.root / LOCK
         require(_identity(_info(lock_path, False)) == _identity(os.fstat(self._lock.fileno())))
         self._security.check(lock_path, False)
-        current = _read_manifest(self.root, self._security)
+        current = _read_manifest(self.root, self._security, self.policy)
         require(current == self._data)
         return current
 
@@ -286,7 +298,7 @@ class ManagedProfile:
                         stack.append((path, depth + 1))
         for name in DIRECTORIES:
             _info(self.root / name, True)
-        data = _read_manifest(self.root, self._security)
+        data = _read_manifest(self.root, self._security, self.policy)
         require(data == self._data)
         return True
 
@@ -301,7 +313,7 @@ class ManagedProfile:
     def _replace(self, state, digest):
         self.verify()
         data = dict(self._data, state=state, confirmed_account_digest=digest)
-        _check_manifest(data, self.root.name, self._security.sid)
+        _check_manifest(data, self.root.name, self._security.sid, self.policy)
         temporary = self.root / ('metadata-' + uuid.uuid4().hex + '.tmp')
         _write_new(temporary, _json(data), self._security)
         os.replace(temporary, self.root / MANIFEST)
@@ -334,7 +346,7 @@ class ManagedProfile:
         current = self._control()
         state = 'execution_unknown' if current['state'] in ('execution_started', 'execution_unknown') else 'unknown_retained'
         data = dict(current, state=state, confirmed_account_digest=None)
-        _check_manifest(data, self.root.name, self._security.sid)
+        _check_manifest(data, self.root.name, self._security.sid, self.policy)
         if data != current:
             temporary = self.root / ('metadata-' + uuid.uuid4().hex + '.tmp')
             _write_new(temporary, _json(data), self._security)
@@ -377,7 +389,7 @@ class ManagedProfile:
         self.close()
 
 
-def _read_manifest(root, security):
+def _read_manifest(root, security, policy=WORKBUDDY_POLICY):
     path = root / MANIFEST
     before = _info(path, False); require(0 < before.st_size <= 4096)
     security.check(path, False)
@@ -387,7 +399,7 @@ def _read_manifest(root, security):
         after = os.fstat(stream.fileno())
     require(len(contents) <= 4096 and (opened.st_size, opened.st_mtime_ns) == (after.st_size, after.st_mtime_ns))
     require(_identity(_info(path, False)) == _identity(before))
-    return _check_manifest(json.loads(contents, object_pairs_hook=_pairs), root.name, security.sid)
+    return _check_manifest(json.loads(contents, object_pairs_hook=_pairs), root.name, security.sid, policy)
 
 
 def _lock(root, security):
@@ -407,29 +419,29 @@ def _lock(root, security):
 
 
 @_api
-def create_profile(parent):
+def create_profile(parent, *, policy=WORKBUDDY_POLICY):
     """New random profile only. Failed/partial directories remain for user review."""
     security = WinSecurity()
     parent = Path(parent); _physical(parent, security)
-    root = parent / (PREFIX + uuid.uuid4().hex)
+    root = parent / (policy.prefix + uuid.uuid4().hex)
     security.create(root)
     for name in DIRECTORIES:
         security.create(root / name)
-    data = dict(schema_version=1, kind='public-beta16-cn-managed', profile_id=root.name,
-                owner_sid=security.sid, pins=dict(PINS), state='fresh', confirmed_account_digest=None,
+    data = dict(schema_version=1, kind=policy.kind, profile_id=root.name,
+                owner_sid=security.sid, pins=dict(policy.pins), state='fresh', confirmed_account_digest=None,
                 native_encryption_verified=False, browser_isolation_verified=False)
     _write_new(root / MANIFEST, _json(data), security)
     _write_new(root / LOCK, b'0', security)
     lock = _lock(root, security)
     try:
-        profile = ManagedProfile(root, security, data, lock)
+        profile = ManagedProfile(root, security, data, lock, policy)
         profile.verify(); return profile
     except BaseException:
         lock.close(); raise
 
 
 @_api
-def open_profile(root):
+def open_profile(root, *, policy=WORKBUDDY_POLICY):
     """Explicit tool-created profile only; lock held through its native process lifetime.
 
     Does not authenticate or prove readiness. Callers still need live Product,
@@ -437,11 +449,11 @@ def open_profile(root):
     """
     security = WinSecurity()
     root = Path(root); _physical(root, security)
-    require(re.fullmatch(PREFIX + r'[0-9a-f]{32}', root.name))
+    require(re.fullmatch(policy.prefix + r'[0-9a-f]{32}', root.name))
     security.check(root, True, protected=True)
     lock = _lock(root, security)
     try:
-        profile = ManagedProfile(root, security, _read_manifest(root, security), lock)
+        profile = ManagedProfile(root, security, _read_manifest(root, security, policy), lock, policy)
         profile.verify(); return profile
     except BaseException:
         lock.close(); raise

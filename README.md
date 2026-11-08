@@ -1,10 +1,18 @@
 # Native Harness API
 
-**最新就绪结论：NOT_READY_FOR_DIRECT_REAL_USE。** 用户要求的是完整真实使用，不以实验探针代替成品。现继续开发必要组件和隔离云端验证；真实 WorkBuddy 认证/模型/执行恢复及 404token 完整链路未验收前，不宣称“打开即可使用”。见 [完成门槛](blueprint/P2-COMPLETION-GATES.md) 与 [真实差距清单](code/docs/REAL_READINESS_GAPS.md)。
+## 当前开发线：通用多 Harness v0.3
 
-404token 本地原生算力渠道适配项目。**当前分支推进 P1b 真实 Bridge/Sub2API 接缝，仍不是 WorkBuddy 上游或可部署模型服务。** 真实 Bridge HTTP 已联调；Sub2API 实际鉴权中间件/handler HTTP 链通过，但数据库迁移及真实 PostgreSQL 路由持久性未验收，执行端仍为明确标注的 FakeHarness。
+目标是把用户本机官方 Harness 的真实执行与文本输出接入 404token / Sub2API。蓝图与实现分别保存在 `blueprint/`、`code/`；当前仍在 draft PR 开发审计，不自动部署服务器，也不替用户登录。
 
-另新增独立的 **WorkBuddy bundled-runtime 本机一次性真实试验程序**，供用户显式选择已安装的官方软件，在本机确认一次 prompt。它不放开上述正式模型渠道，不提取登录凭据，不以 mock 测试声称真实账号已验收。参见 [试验指南](code/docs/WORKBUDDY_LOCAL_TRIAL.md)、[Windows 打包说明](code/packaging/README.zh-CN.md) 和 [P2 边界](blueprint/P2-LOCAL-TRIAL-ADDENDUM.md)。
+- [已独审定稿的开发文档](blueprint/DEVELOPMENT-v0.3-MULTI-HARNESS.md) 与 [设计审计](blueprint/DEVELOPMENT-AUDIT-v0.3.md)。
+- [通用配置与旧任务恢复](code/docs/MULTI-HARNESS-CONFIG.md)：单 Node、单执行槽、一个账本；旧任务不会换 Harness 重跑。
+- WorkBuddy：保留已实现的 public SFE 运行链、受控 profile、模型发现和流式文本。
+- Codex：新增固定版本官方 App Server、用户本地 ChatGPT device-code 登录、模型发现、文本流及终态清理。源码/自编协议测试不等于真实账号模型验收。
+- 豆包工作、千问办公：尚未实现 Adapter，不列入可用模型。
+
+**真实账户验收仍由用户在本机完成。** Codex 当前只投影回答文本，commentary 显示任务运行状态而不转发原文，不是完整 Codex UI 镜像。工具审批不会自动放行；不回传凭据，不把模拟输出或心跳拼成模型答案。实际运行官方客户端本身并不能保证转供服务符合厂商条款，应单独核对账号和服务授权。
+
+以下 v0.2 / P1 文档为历史阶段记录，不替代 v0.3 当前支持范围：
 
 - [审定蓝图 v0.2](blueprint/BLUEPRINT-v0.2.md)：目标、模型绑定、能力边界与分阶段门槛。
 - [独立设计复核](blueprint/DESIGN-AUDIT-v0.2.md)：允许开始离线实现，不是代码认证。

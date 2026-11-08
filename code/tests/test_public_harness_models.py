@@ -112,4 +112,65 @@ class ModelTests(unittest.TestCase):
     def test_windows_owned_peer(self):
         r,e=self.run_engine(transport=SupervisedACPTransport());self.assertTrue(r['success'],r)
 
+
+class TargetExportTests(unittest.TestCase):
+    def result(self):
+        return {'success':True,'cleanup_confirmed':True,'profile_restored':True,'profile_closed':True,
+                'catalog':{'models':[{'id':'native-model','name':'Fixture model'}]}}
+
+    def export(self,result=None,**changes):
+        options=dict(profile_root=r'C:\Profiles\profile-1',profile_id='profile-1',account_fingerprint=DIGEST,
+                     assets_root=r'C:\Native\assets',native_model='native-model',public_alias='workbuddy-test')
+        options.update(changes)
+        return models.export_target(self.result() if result is None else result,**options)
+
+    def test_catalog_and_confirmed_metadata_generate_exact_recipe(self):
+        from native_harness_api.harness_registry import ExecutionTarget, ADAPTERS
+        exported=self.export();parsed=ExecutionTarget.from_value(exported)
+        self.assertEqual(parsed.recipe['profile_id'],'profile-1')
+        self.assertEqual(parsed.recipe['account_fingerprint'],DIGEST)
+        self.assertEqual(parsed.recipe['asset_identity'],ADAPTERS['workbuddy.public-sfe.v1']['asset_identity'])
+        self.assertEqual(parsed.binding.native_model,'native-model')
+
+    def test_unknown_model_or_incomplete_discovery_cannot_export(self):
+        with self.assertRaises(ValueError):self.export(native_model='unlisted')
+        for key in ('success','cleanup_confirmed','profile_restored','profile_closed'):
+            result=self.result();result[key]=False
+            with self.subTest(key=key),self.assertRaises(ValueError):self.export(result)
+        with self.assertRaises(ValueError):self.export(public_alias='codex-wrong')
+
+    def test_flags_must_be_paired_before_native_entry(self):
+        with patch('public_harness_runtime_assets.verify_runtime_assets',side_effect=AssertionError('No launch')) as verify:
+            with patch('sys.stdout',new=io.StringIO()):
+                self.assertEqual(models.main(['--target-model','native-model']),1)
+                self.assertEqual(models.main(['--public-alias','workbuddy-test']),1)
+            verify.assert_not_called()
+
+    def test_cli_target_stdout_is_only_json_from_frozen_profile(self):
+        from pathlib import PureWindowsPath
+        from types import SimpleNamespace
+        from contextlib import ExitStack
+        class TTY(io.StringIO):
+            def isatty(self):return True
+        profile=Profile(PureWindowsPath(r'C:\Profiles\profile-1'))
+        def discover(*args):
+            profile.expected_account_digest='b'*64
+            return self.result()
+        out=TTY();err=TTY()
+        with ExitStack() as stack:
+            stack.enter_context(patch.object(models,'os',SimpleNamespace(name='nt')))
+            stack.enter_context(patch.object(models,'Path',PureWindowsPath))
+            stack.enter_context(patch('sys.stdin',TTY()))
+            stack.enter_context(patch('sys.stdout',out));stack.enter_context(patch('sys.stderr',err))
+            stack.enter_context(patch('public_harness_runtime_assets.verify_runtime_assets',return_value={}))
+            stack.enter_context(patch('public_harness_login_profile.open_profile',return_value=profile))
+            stack.enter_context(patch.object(models,'discover_models',side_effect=discover))
+            code=models.main(['--assets-root',r'C:\Native\assets','--profile',str(profile.root),
+                              '--target-model','native-model','--public-alias','workbuddy-test'])
+        self.assertEqual(code,0)
+        emitted=json.loads(out.getvalue())
+        self.assertEqual(set(emitted),{'recipe','binding','assets_root'})
+        self.assertEqual(emitted['recipe']['account_fingerprint'],DIGEST)
+        self.assertIn('ONE empty native session',err.getvalue())
+
 if __name__=='__main__':unittest.main()
