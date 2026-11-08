@@ -23,3 +23,6 @@
 完整保留官方 SFE 包的 `assets/sfe/package/LICENSE`（Tencent CodeBuddy MIT）、Node 发行包中的 `LICENSE` 及全部随包文件、Python 的 `runtime/LICENSE.txt`。软件分发许可不等于账号配额可向第三方商业转供；服务条款和账号授权需单独遵守。
 
 标准 `/v1` 接入需服务端显式开启 `standard_api`，每次调用仍需稳定 Idempotency-Key；不是完整通用 provider。`stream:true` 缺省为 `openai-append-v1`，可被普通 OpenAI SDK 消费，只对真实可追加快照输出 choices.delta 后缀。若原生改写/缩短或最终不一致，报 NATIVE_STREAM_REWRITE_REQUIRED 后关闭而不发 [DONE]，须原 Key/正文/幂等键改 stream:false 获取权威答案，不能换键重生；切换 stream:false 时移除显式协议头。普通 SDK 通常不显示状态注释；需要快照更正及审批/unknown 状态请显式发送 `X-Native-Stream-Protocol: native-events-v1`，按 text_snapshot 覆盖全部文本，仅 completion/task_error 表示终态。标准流只支持 Last-Event-ID:0 从头只读恢复；显式原生流可用正游标恢复。idle、EOF、断线均不代表完成。完整双协议、180秒预算和代理禁缓冲规则见 NATIVE_EVENT_STREAM.md 及部署说明。
+
+
+混合 WorkBuddy/Codex：本包也包含 Codex 适配器轻量工具，但不携带 Codex 官方资产。分别解压两个选择包，从各自入口登录、导出 target，合并到同一 v2 配置，各 target 指向其实际资产目录。只启动一个共享 Node，沿用同一持久数据目录和执行资源身份；不要启动第二个槽位。详见 `MULTI-HARNESS-CONFIG.md`。

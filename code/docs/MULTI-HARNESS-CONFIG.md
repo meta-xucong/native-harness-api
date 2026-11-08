@@ -40,3 +40,12 @@ Client.cmd models --profile C:\Profiles\实际profile --target-model 实际模�
 ```
 
 它再次创建并关闭一个空目录会话，不发送 prompt。只有本次官方目录包含该模型、身份核验和清理均通过后，才输出单个 target JSON。将其完整放入 spec 的 `targets` 数组，不修改其中 recipe、Binding 或指纹。此操作只输出本机配置，不保存部署、不启动 Node，也不证明该模型已完成真实推理。
+
+
+## 一台电脑混合接入两个 Harness
+
+WorkBuddy 与 Codex 下载包都包含两种适配器所需的轻量 Python 工具，区别只在随包提供的官方运行资产及默认登录入口。混合使用时，将两个包分别解压，例如 `C:\Harness\WorkBuddy` 和 `C:\Harness\Codex`，不要相互覆盖。
+
+分别在对应包运行登录和模型目录导出命令，将两份 target 放入同一个 spec 的 `targets` 数组。每个 target 的 `assets_root` 保留其对应包的资产目录。随后选择任一包运行**唯一一个 Node**，加载合并后的 v2 配置，并沿用同一个 `windows_data_dir`、journal 和执行资源身份。不要同时从两个包启动 Node，不要为另一个 Harness 新建槽位或状态目录。
+
+两个包各自的 `Client login/models/verify-assets` 仍按本包清单选择默认 Harness；它们不会冒称本包还携带另一种官方资产。运行中的统一 Node 则根据冻结的 target 配方选择工具与资产，不依赖启动它的包的默认登录类型。

@@ -1,6 +1,6 @@
 # Codex 本地客户端（Windows x64）
 
-这是独立的 Codex 选择包，不包含 WorkBuddy 运行资产。`Client` 根据包清单默认选择 Codex，不需要指定 `--harness`。需要 WorkBuddy 时下载对应包；两类目标可接入同一个 Bridge。
+这是独立的 Codex 选择包，包含两种适配器的轻量工具，但不包含 WorkBuddy 官方运行资产。`Client` 根据包清单默认选择 Codex，不需要指定 `--harness`。需要 WorkBuddy 时下载对应包；两类目标可接入同一个 Bridge。混合使用时分别解压两个资产包，将各 target 指向对应资产目录，只启动一个共享 Node；详见 `MULTI-HARNESS-CONFIG.md`。
 
 ## 验证与登录
 

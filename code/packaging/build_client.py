@@ -36,7 +36,7 @@ def sources(code, revision, harness='workbuddy'):
     for name in ('native_trial_runtime.py','public_sfe_adapter.py','public_sfe_owned_session.py','public_sfe_session.py'):
         if 'code/src/native_harness_api/'+name not in tracked: raise ValueError('Client implementation incomplete')
     selected = [(p, p[len('code/'):]) for p in tracked if p.endswith('.py') and '/__pycache__/' not in p]
-    selected += [('code/tools/'+n,'tools/'+n) for n in TOOLS + (CODEX_TOOLS if harness == 'codex' else ())]
+    selected += [('code/tools/'+n,'tools/'+n) for n in TOOLS + CODEX_TOOLS]
     selected += [('code/packaging/'+n,n) for n in PACKAGING if harness != 'codex' or n not in ('CLIENT-README.zh-CN.md', 'client-config.example.json')]
     if harness == 'codex':
         selected += [('code/packaging/CODEX-CLIENT-README.zh-CN.md', 'CLIENT-README.zh-CN.md'),

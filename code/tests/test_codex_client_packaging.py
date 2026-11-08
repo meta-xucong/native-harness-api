@@ -19,7 +19,7 @@ class CodexPackageTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
-        self.root = Path(self.temp.name)
+        self.root = Path(self.temp.name).resolve()
         self.assets = self.root / 'assets'
         (self.assets / 'bin').mkdir(parents=True)
         (self.assets / 'bin/codex-app-server.exe').write_bytes(b'fixture only')
@@ -59,7 +59,7 @@ class CodexLauncherTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
-        self.root = Path(self.temp.name)
+        self.root = Path(self.temp.name).resolve()
         (self.root / 'CLIENT-MANIFEST.json').write_text(json.dumps({'kind': builder.CODEX_KIND}))
         self.old_path = list(sys.path)
         self.addCleanup(lambda: sys.path.__setitem__(slice(None), self.old_path))
@@ -97,3 +97,31 @@ class CodexLauncherTests(unittest.TestCase):
         with patch.dict(sys.modules, {'codex_assets': types.SimpleNamespace(verify_assets=lambda p: seen.append(p))}), contextlib.redirect_stdout(io.StringIO()):
             client.main(['verify-assets'])
         self.assertEqual(seen, [self.root / 'assets'])
+
+
+class MixedPackageSourceTests(unittest.TestCase):
+    def test_both_packages_ship_both_adapter_tools_not_both_assets(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            revision = 'a' * 40
+            tracked = ['code/src/native_harness_api/' + name for name in (
+                'native_trial_runtime.py', 'public_sfe_adapter.py', 'public_sfe_owned_session.py',
+                'public_sfe_session.py', 'codex_trial_runtime.py', 'codex_owned_session.py', 'codex_session.py')]
+            def git(command, **kwargs):
+                args = command[3:]
+                if args == ['rev-parse', 'HEAD']: output = revision.encode()
+                elif args == ['rev-parse', '--show-toplevel']: output = str(root).encode()
+                elif args[0] == 'ls-tree': output = '\n'.join(tracked).encode()
+                elif args[0] == 'show': output = b'committed fixture'
+                else: raise AssertionError(args)
+                return types.SimpleNamespace(stdout=output)
+            with patch.object(builder.subprocess, 'run', git), patch.object(builder, 'read_regular', return_value=b'committed fixture'):
+                for harness in ('workbuddy', 'codex'):
+                    files = builder.sources(root / 'code', revision, harness)
+                    for tool in builder.TOOLS + builder.CODEX_TOOLS:
+                        self.assertIn('tools/' + tool, files)
+                    for module in ('codex_trial_runtime.py', 'public_sfe_adapter.py'):
+                        self.assertIn('src/native_harness_api/' + module, files)
+                    self.assertFalse(any(name.startswith('assets/') for name in files))
+                    readme = 'CODEX-CLIENT-README.zh-CN.md' if harness == 'codex' else 'CLIENT-README.zh-CN.md'
+                    self.assertEqual(files['CLIENT-README.zh-CN.md'].name, readme)
