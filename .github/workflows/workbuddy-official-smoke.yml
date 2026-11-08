@@ -1,11 +1,8 @@
 name: Official WorkBuddy no-account entry smoke
+# Vendor execution is opt-in, never a side effect of shared lifecycle edits.
+# Dispatch only after explicit authorization of the no-account smoke.
 on:
-  push:
-    paths:
-      - 'code/tools/official_workbuddy_smoke.py'
-      - 'code/src/native_harness_api/windows_job.py'
-      - 'code/tests/test_windows_job.py'
-      - '.github/workflows/workbuddy-official-smoke.yml'
+  workflow_dispatch:
 permissions:
   contents: read
 jobs:
