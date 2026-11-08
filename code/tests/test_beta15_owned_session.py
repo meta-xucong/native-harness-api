@@ -1,5 +1,7 @@
 """Owned engine against only a self-authored Node child, never a vendor import."""
 import os
+import json
+import copy
 from pathlib import Path
 import shutil
 import subprocess
@@ -30,21 +32,158 @@ class SyntheticHostTransport:
         for stream in (self.stdin,self.stdout,self.stderr):stream.close()
         return {'host_exited':True,'owned_job_empty':True,'handles_closed':True,'cleanup_complete':True}
 
+# Test hygiene must not rewrite the result under test or relaunch its child.
+_CLEANUP_KEYS = ('host_exited', 'owned_job_empty', 'handles_closed', 'cleanup_complete', 'io_threads_stopped')
+
+def _cleanup_projection(value):
+    value = value if type(value) is dict else {}
+    return {key: value.get(key) if type(value.get(key)) is bool else None for key in _CLEANUP_KEYS}
+
+
+def finish_synthetic_fixture(folder, transport, original, *, mode="synthetic", owned=False, clock=time.monotonic,
+                             sleep=time.sleep, emit=print):
+    """Same-owner hygiene only; original observations remain authoritative."""
+    modes = {'synthetic', 'success', 'orphan', 'exit_nonzero', 'wrong_model', 'ack_only',
+             'bad_frame', 'oversized', 'stderr_overflow', 'shutdown_hang', 'late_conflict'}
+    label = mode if type(mode) is str and mode in modes else 'unspecified'
+    result = original if type(original) is dict else {}
+    before = _cleanup_projection(result.get('cleanup'))
+    # No arbitrary exception, frame, path, text, prompt or stderr is printed.
+    faults = {'CLEANUP_UNCONFIRMED', 'CLOSE_UNCONFIRMED', 'EXECUTION_UNCONFIRMED',
+              'TURN_NOT_COMPLETED', 'TURN_INDETERMINATE', 'INVALID_FRAME',
+              'FRAME_LIMIT', 'OUTPUT_LIMIT', 'STDERR_LIMIT', 'SEND_UNCONFIRMED',
+              'READ_FAILED', 'WRITE_FAILED', 'CANCEL_REQUESTED', 'SHIM_FAULT'}
+    fault = result.get('fault')
+    summary = {'fixture': 'synthetic-owned-cleanup', 'mode': label,
+               'owned': owned is True, 'original_cleanup': before,
+               'original_fault': fault if fault is None or fault in faults else 'OTHER',
+               'original_outcome': result.get('outcome') if result.get('outcome') in
+                   ('succeeded', 'indeterminate', 'cancelled', 'pending') else 'unknown',
+               'observe_failed': False, 'hygiene_attempted': False,
+               'hygiene_failed': False, 'folder_attempts': 0, 'folder_failed': False}
+    try:
+        # May be cached closed facts, not a fresh OS observation or new proof.
+        observed = transport.observe()
+        summary['observed'] = _cleanup_projection(observed)
+    except Exception:
+        summary['observe_failed'] = True
+    if not all(before[key] is True for key in _CLEANUP_KEYS):
+        summary['hygiene_attempted'] = True
+        try:
+            summary['hygiene_cleanup'] = _cleanup_projection(transport.close(timeout=2))
+            summary['hygiene_failed'] = not all(summary['hygiene_cleanup'][key] is True
+                for key in _CLEANUP_KEYS if key != 'io_threads_stopped')
+        except Exception:
+            summary['hygiene_failed'] = True
+    deadline = clock() + 2
+    while True:
+        summary['folder_attempts'] += 1
+        try:
+            folder.cleanup()
+            break
+        except OSError as error:
+            retryable = isinstance(error, PermissionError) and getattr(error, 'winerror', None) in (32, 5)
+            remaining = deadline - clock()
+            if not retryable or remaining <= 0 or summary['folder_attempts'] >= 41:
+                summary['folder_failed'] = True
+                break
+            sleep(min(.05, remaining))
+        except Exception:
+            summary['folder_failed'] = True
+            break
+    encoded = json.dumps(summary, sort_keys=True, separators=(',', ':'))
+    emit(encoded)
+    if summary['hygiene_failed'] or summary['folder_failed']:
+        raise AssertionError('SYNTHETIC_FIXTURE_CLEANUP_FAILED ' + encoded) from None
+    return summary
+
+
+class FixtureCleanupTests(unittest.TestCase):
+    def fixture(self, failures=0, *, permanent=False, close_error=False, folder_error=False):
+        class Clock:
+            value = 0
+            def now(self): return self.value
+            def sleep(self, seconds): self.value += seconds
+        clock = Clock()
+        class Folder:
+            calls = 0
+            def cleanup(self):
+                self.calls += 1
+                if folder_error: raise RuntimeError('PRIVATE')
+                if permanent or self.calls <= failures:
+                    error = PermissionError('PRIVATE'); error.winerror = 32; raise error
+        class Transport:
+            closes = 0
+            def observe(self): return {'host_exited': True, 'owned_job_empty': False}
+            def close(self, timeout):
+                self.closes += 1
+                if close_error: raise RuntimeError('PRIVATE')
+                return {key: True for key in _CLEANUP_KEYS}
+        return Folder(), Transport(), clock
+
+    def test_hygiene_does_not_upgrade_original_false(self):
+        folder, transport, clock = self.fixture()
+        original = {'cleanup': {'owned_job_empty': False}, 'fault': 'CLEANUP_UNCONFIRMED',
+                    'outcome': 'indeterminate', 'session': {'text': 'PRIVATE'}}
+        saved = copy.deepcopy(original); lines = []
+        summary = finish_synthetic_fixture(folder, transport, original, mode='PRIVATE_LABEL', owned=True, clock=clock.now, sleep=clock.sleep, emit=lines.append)
+        self.assertEqual(original, saved); self.assertEqual(transport.closes, 1)
+        self.assertFalse(summary['original_cleanup']['owned_job_empty'])
+        self.assertTrue(summary['hygiene_cleanup']['owned_job_empty'])
+        self.assertNotIn('PRIVATE', ''.join(lines))
+        self.assertEqual(summary['mode'], 'unspecified'); self.assertTrue(summary['owned'])
+
+    def test_folder_release_tail_retries_only_cleanup(self):
+        folder, transport, clock = self.fixture(failures=2)
+        original = {'cleanup': {key: True for key in _CLEANUP_KEYS}}
+        summary = finish_synthetic_fixture(folder, transport, original, clock=clock.now, sleep=clock.sleep, emit=lambda _: None)
+        self.assertEqual(summary['folder_attempts'], 3); self.assertEqual(transport.closes, 0)
+
+    def test_permanent_lock_bounded_with_original_diagnostic(self):
+        folder, transport, clock = self.fixture(permanent=True)
+        with self.assertRaises(AssertionError) as caught:
+            finish_synthetic_fixture(folder, transport, {'cleanup': {'owned_job_empty': False}}, clock=clock.now, sleep=clock.sleep, emit=lambda _: None)
+        self.assertLessEqual(folder.calls, 41); self.assertLessEqual(clock.value, 2)
+        self.assertIn('"owned_job_empty":false', str(caught.exception)); self.assertNotIn('PRIVATE', str(caught.exception))
+
+    def test_nonsharing_permission_error_is_not_retried(self):
+        folder, transport, clock = self.fixture()
+        calls = []
+        def denied():
+            calls.append(True)
+            error = PermissionError('PRIVATE'); error.winerror = 1314; raise error
+        folder.cleanup = denied
+        with self.assertRaises(AssertionError):
+            finish_synthetic_fixture(folder, transport, {}, clock=clock.now, sleep=clock.sleep, emit=lambda _: None)
+        self.assertEqual(len(calls), 1); self.assertEqual(clock.value, 0)
+
+    def test_cleanup_exceptions_are_not_swallowed(self):
+        for kwargs in ({'close_error': True}, {'folder_error': True}):
+            folder, transport, clock = self.fixture(**kwargs)
+            with self.assertRaises(AssertionError):
+                finish_synthetic_fixture(folder, transport, {}, clock=clock.now, sleep=clock.sleep, emit=lambda _: None)
+            self.assertEqual(folder.calls, 1)
+
 @unittest.skipUnless(NODE,'Node needed for self-authored child')
 class OwnedEngineTests(unittest.TestCase):
     def run_mode(self, mode='success', *, owned=False, timeout=15,cleanup_timeout=2, transport_override=None, engine_type=OwnedSessionEngine):
-        with tempfile.TemporaryDirectory() as root:
-            path=Path(root).resolve()
-            env={k:v for k,v in os.environ.items() if k.upper() in ('PATH','SYSTEMROOT','WINDIR','TEMP','TMP','COMSPEC')}
-            env['SHIM_FIXTURE_MODE']=mode
-            transport=transport_override or (SupervisedACPTransport() if owned else SyntheticHostTransport())
-            engine=engine_type(transport)
-            result=engine.run([NODE,str(CHILD.resolve())],path,env,workspace=str(path),
-                              model_id='synthetic-b',prompt='synthetic prompt',timeout=timeout,
-                              cleanup_timeout=cleanup_timeout)
-            if mode=='orphan':
-                self.assertTrue((path/'synthetic-orphan.ready').is_file(),result)
-            return result,engine,transport
+        folder = tempfile.TemporaryDirectory()
+        path = Path(folder.name).resolve()
+        env={k:v for k,v in os.environ.items() if k.upper() in ('PATH','SYSTEMROOT','WINDIR','TEMP','TMP','COMSPEC')}
+        env['SHIM_FIXTURE_MODE']=mode
+        transport=transport_override or (SupervisedACPTransport() if owned else SyntheticHostTransport())
+        engine=engine_type(transport)
+        retained = {'result': None}
+        # Runs after caller assertions; a directory-sharing error cannot prevent
+        # the test from seeing the ORIGINAL engine cleanup evidence.
+        self.addCleanup(lambda: finish_synthetic_fixture(folder, transport, retained['result'], mode=mode, owned=owned))
+        result=engine.run([NODE,str(CHILD.resolve())],path,env,workspace=str(path),
+                          model_id='synthetic-b',prompt='synthetic prompt',timeout=timeout,
+                          cleanup_timeout=cleanup_timeout)
+        retained['result'] = copy.deepcopy(result)
+        if mode=='orphan':
+            self.assertTrue((path/'synthetic-orphan.ready').is_file(),result)
+        return result,engine,transport
 
     def test_shutdown_ack_requires_actual_boolean_and_issued_intent(self):
         for issued, closed in ((False, True), (True, 1), (True, 'true')):
