@@ -59,7 +59,7 @@ class QuickStartReviewTests(unittest.TestCase):
         original_path = list(sys.path)
         self.addCleanup(lambda: sys.path.__setitem__(slice(None), original_path))
         with tempfile.TemporaryDirectory() as folder:
-            root = Path(folder)
+            root = Path(folder).resolve()
             (root / 'CLIENT-MANIFEST.json').write_text(json.dumps({'kind': 'native-harness-windows-codex-client'}))
             with patch.object(client, '__file__', str(root / 'client.py')), \
                  patch.object(quick, 'main', return_value=0) as start:

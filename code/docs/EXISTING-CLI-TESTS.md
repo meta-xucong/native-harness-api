@@ -26,3 +26,15 @@
 - 真实 WorkBuddy 登录/模型、本轮三仓真实 HTTP/数据库联调、生产部署/收费：**NOT_RUN**；Bridge/Sub2API 源码无变更。
 - Windows 自写 peer、实际 ACL/owned process、配置 round-trip、完整 ZIP：由精确提交远端 CI 另记；此处 Linux skips 不当作 Windows 通过。
 - App Server 认证商业/托管服务限制仍存在，测试通过不是404token商业转供许可。
+
+## 首轮 Windows CI 的测试 fixture 修正
+
+首轮远端源码 `7d5cd246` 与本地审定 `08db3a6` 的完整 tree 相同。Windows PR 矩阵 run `42490255383` 的发现测试为987项，失败2项、跳过6项；Ubuntu通过。push矩阵和完整打包workflow也因同轮测试失败而未通过，不能把它们算成安装包验收。
+
+两项失败均定位为新增测试 fixture：
+1. Windows真实配置round-trip使用模型字符串 `default`，被现有“固定原生模型不可为auto/default”的校验正确拒绝。改成具体测试模型 `native-default-model`，并增加不依赖Windows的目录默认选择→真实recipe/binding回归。
+2. 入口断言使用未resolve的Windows短临时路径 `RUNNER~1`，与产品已规范化的实际路径不同。测试改为与入口一致的 `Path.resolve()`，仍断言完整参数及帮助不启动。
+
+仅修改测试，没有修改产品运行逻辑、放宽校验、扩大timeout或删除断言。独立复审认可，并另跑focused23项，22 PASS / 1 Windows SKIP。最终Windows CI另以修复提交精确运行记录为准，不提前计通过。
+
+修复后重新运行完整Linux回归：**997 tests，937 PASS / 60 SKIP**，46.710秒；compileall与diff检查通过。原996项历史记录保留，新增1项为跨平台具体默认模型回归。

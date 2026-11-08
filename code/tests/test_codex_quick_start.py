@@ -19,7 +19,7 @@ class CodexWizardTests(unittest.TestCase):
         self.profile = SimpleNamespace(root=self.root / 'profiles' / ('codex-user-cli-' + 'a'*32), state='fresh')
         self.context = dict(cli_path='C:/official/codex.exe', cli_sha256='a'*64, codex_home='C:/User/.codex')
         self.account = dict(type='chatgpt', email='fixture@example.invalid', workspaceName='Fixture')
-        self.models = [dict(model='first', displayName='First', isDefault=False), dict(model='default', displayName='Second', isDefault=True)]
+        self.models = [dict(model='first', displayName='First', isDefault=False), dict(model='native-default-model', displayName='Second', isDefault=True)]
         self.cli = SimpleNamespace(PREFIX='codex-user-cli-', resolve_cli=Mock(return_value=self.context), verify_version=Mock(),
             create_profile=Mock(return_value=self.profile), open_profile=Mock(return_value=self.profile), read_context=Mock(return_value=self.context),
             discover=Mock(return_value=dict(account=self.account, models=self.models)), confirm_profile=Mock(), export_target=Mock(return_value={'target': 'fixture'}),
@@ -40,9 +40,18 @@ class CodexWizardTests(unittest.TestCase):
         self.cli.create_profile.assert_called_once_with(self.root / 'profiles', self.context)
         self.cli.discover.assert_called_once_with(self.profile, self.context)
         self.cli.confirm_profile.assert_called_once_with(self.profile, self.account)
-        self.cli.export_target.assert_called_once_with(self.profile, self.context, self.models, 'default', 'codex-local')
+        self.cli.export_target.assert_called_once_with(self.profile, self.context, self.models, 'native-default-model', 'codex-local')
         write.assert_called_once_with(self.root, self.profile.root, {'target': 'fixture'})
         self.cli.close_profile.assert_called_once_with(self.profile); self.cli.hold_retained.assert_called_once()
+
+    def test_default_catalog_choice_is_a_concrete_binding_on_all_platforms(self):
+        from native_harness_api.harness_registry import make_recipe, binding_for
+        with patch('builtins.input', return_value=''):
+            selected = q.choose_codex_model(self.models)
+        recipe = make_recipe(adapter_id='codex.user-cli.v1',
+            profile_path=r'C:\Profiles\sidecar', profile_id='sidecar', account_fingerprint='b'*64,
+            native_model=selected, public_alias='codex-local', **self.context)
+        self.assertEqual(binding_for(recipe).native_model, 'native-default-model')
 
     def test_user_can_change_model_and_choose_executable(self):
         result, _ = self.setup(['', 'C:/chosen/codex.exe', 'yes', 'yes', '1', 'codex-chosen'])
