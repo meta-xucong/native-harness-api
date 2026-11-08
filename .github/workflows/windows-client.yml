@@ -16,6 +16,7 @@ on:
       - 'code/packaging/build_client.py'
       - 'code/packaging/build_server.py'
       - 'code/packaging/client.py'
+      - 'code/packaging/quick_start.py'
       - 'code/packaging/Client.cmd'
       - 'code/packaging/CLIENT-README.zh-CN.md'
       - 'code/packaging/CODEX-*'
@@ -79,6 +80,8 @@ jobs:
           & "$root/unpacked/Client.cmd" --help
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           & "$root/unpacked/runtime/python.exe" -I "$root/unpacked/client.py" --help
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & "$root/unpacked/runtime/python.exe" -I "$root/unpacked/client.py" start --help
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           & "$root/unpacked/runtime/python.exe" -I "$root/unpacked/client.py" login --explain
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

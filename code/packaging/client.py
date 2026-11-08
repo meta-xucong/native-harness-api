@@ -13,7 +13,7 @@ def main(argv=None):
     root = Path(__file__).resolve().parent
     sys.path[:0] = [str(root / 'src'), str(root / 'tools')]
     parser = Parser(description='Native Harness local client. Explicit commands only. Optional prefix: --harness workbuddy|codex.')
-    parser.add_argument('command', choices=('login', 'models', 'node', 'facade', 'preflight', 'verify-assets'))
+    parser.add_argument('command', choices=('start', 'login', 'models', 'node', 'facade', 'preflight', 'verify-assets'))
     argv = list(sys.argv[1:] if argv is None else argv)
     manifest = root / 'CLIENT-MANIFEST.json'
     kind = json.loads(manifest.read_text(encoding='utf-8'))['kind'] if manifest.exists() else 'native-harness-windows-client'
@@ -24,8 +24,15 @@ def main(argv=None):
         if len(argv) < 2 or argv[1] != harness:
             parser.error('Harness not included in this package')
         argv = argv[2:]
+    if not argv:
+        argv = ['start'] if harness == 'workbuddy' else ['--help']
     args = parser.parse_args(argv[:1])
     remaining = argv[1:]
+    if args.command == 'start':
+        if harness != 'workbuddy': parser.error('Quick start currently supports the WorkBuddy package only')
+        sys.path.insert(0, str(root))
+        from quick_start import main as entry
+        return entry(root, remaining)
     if args.command in ('login', 'models'):
         login_parser = Parser(prog='Client '+args.command, allow_abbrev=False)
         profile_flag = '--profile-parent' if args.command == 'login' else ('--profile-root' if harness == 'codex' else '--profile')

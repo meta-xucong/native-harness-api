@@ -21,7 +21,7 @@ CODEX_EXE_SIZE = 280844080
 
 TOOLS = ('prepare_native_deployment.py', 'public_harness_preflight.py', 'public_harness_models.py', 'public_harness_login.py', 'public_harness_login_profile.py', 'public_harness_login_protocol.py',
          'public_harness_runtime_assets.py', 'public_harness_catalog_assets.py', 'public_harness_catalog_protocol.py')
-PACKAGING = ('client.py', 'Client.cmd', 'CLIENT-README.zh-CN.md', 'client-config.example.json')
+PACKAGING = ('client.py', 'quick_start.py', 'Client.cmd', 'CLIENT-README.zh-CN.md', 'client-config.example.json')
 
 
 def sources(code, revision, harness='workbuddy'):

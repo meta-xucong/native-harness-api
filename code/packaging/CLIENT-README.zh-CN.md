@@ -2,7 +2,19 @@
 
 这是用户自行连接 WorkBuddy 账号的原生客户端，不读取现有 WorkBuddy 桌面登录文件、不提取 token，也不直接访问厂商内部模型接口。模型由官方公开 Harness 程序运行；不要求安装系统 Python/Node。
 
-## 顺序
+## 最简单用法
+
+解压到固定目录后，双击 **Client.cmd**。不用安装系统 Python/Node，也不用手工拼登录、模型和配置命令。
+
+- **已有部署**：第一次选择原 `windows-node.json`，之后双击直接启动同一 Node。不要新建配置替代旧 journal，也不要同时开两个 Node。
+- **全新部署**：按向导由你在官方页面登录并核对账号；程序保留本工具的 profile，读取一次官方模型目录，再让你选模型。需要你提供服务端 Bridge 地址和 Sub2API 数字 user/key ID 等实际接入信息，不能凭空生成这些信息。
+- 新配置在 `connection/`，准入默认关闭。按部署说明把其中三份服务器配置交给对应服务；其余文件留本机。服务端接好后再次双击。Node token 若没有环境变量，每次只在终端隐藏输入，不保存。
+
+这是与 WorkBuddy **同账号独立登录**，不是复用 GUI 登录态。不能保证登录一直有效，也没有验明真实积分/配额归属。启动器不会发测试 prompt；请你确认账号后自行发送一个最小请求验收。
+
+升级包不要覆盖/删除原 profile、connection 或执行数据。可用 `Client.cmd start --config "原 windows-node.json 的绝对路径"` 继续原部署；配置中的资产路径应指向对应版本的实际目录。取消、登录过期或 unknown 时不会自动换账号、另建 profile 或重跑任务。
+
+## 高级 CLI（原有入口保留）
 
 1. 将整个 ZIP 解压至本地固定磁盘的普通目录。保留 `runtime`、`assets`、`src`、`tools` 的全部文件，不只复制 EXE。不要覆盖已有 profile 或数据库。
 2. 命令行运行 `Client.cmd verify-assets`，检查全部固定官方资产。

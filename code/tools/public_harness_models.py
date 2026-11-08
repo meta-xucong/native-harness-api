@@ -162,6 +162,13 @@ def export_target(result, *, profile_root, profile_id, account_fingerprint, asse
     return {'recipe': recipe, 'binding': binding_for(recipe).wire(), 'assets_root': profile_path(str(assets_root))}
 
 
+def hold_retained():
+    """Keep uncertain owners alive, also when called by the thin launcher."""
+    while RETAINED:
+        try: time.sleep(1)
+        except KeyboardInterrupt: continue
+
+
 class SafeParser(argparse.ArgumentParser):
     def error(self, message): raise ValueError('ARGUMENTS_REJECTED')
 
@@ -201,16 +208,12 @@ def main(argv=None):
             print('Current model: ' + result['catalog']['current_model_id'])
             print('Choose an exact ID for native_model in your local configuration; no binding was written.')
         else: print('Catalog unavailable. No model binding saved; profile may require reconciliation.', file=sys.stderr if exporting else sys.stdout)
-        while RETAINED:
-            try: time.sleep(1)
-            except KeyboardInterrupt: continue
+        hold_retained()
         return 0 if result['success'] else 1
     except (Exception,KeyboardInterrupt):
         if RETAINED:
             # Even output/TTY failure must not release uncertain process owners.
-            while RETAINED:
-                try: time.sleep(1)
-                except KeyboardInterrupt: continue
+            hold_retained()
         print('Catalog not started or unconfirmed; no automatic retry or model binding.', file=sys.stderr if exporting else sys.stdout)
         return 1
 

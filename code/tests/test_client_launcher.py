@@ -44,3 +44,10 @@ class ClientLauncherTests(unittest.TestCase):
   with patch.dict(sys.modules,{'public_harness_models':module}):
    self.assertEqual(client.main(['models','--profile','C:/profile','--target-model','native','--public-alias','workbuddy-test']),0)
   self.assertEqual(seen[0][-4:],['--target-model','native','--public-alias','workbuddy-test'])
+
+ def test_default_and_explicit_start_use_thin_launcher(self):
+  seen=[];module=types.SimpleNamespace(main=lambda root,args:seen.append((root,args)) or 0)
+  with patch.dict(sys.modules,{'quick_start':module}):
+   self.assertEqual(client.main([]),0)
+   self.assertEqual(client.main(['start','--config','C:/original.json']),0)
+  self.assertEqual(seen[0][1],[]);self.assertEqual(seen[1][1],['--config','C:/original.json'])

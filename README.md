@@ -6,7 +6,7 @@
 
 - [已独审定稿的开发文档](blueprint/DEVELOPMENT-v0.3-MULTI-HARNESS.md) 与 [设计审计](blueprint/DEVELOPMENT-AUDIT-v0.3.md)。
 - [通用配置与旧任务恢复](code/docs/MULTI-HARNESS-CONFIG.md)：单 Node、单执行槽、一个账本；旧任务不会换 Harness 重跑。
-- WorkBuddy：保留已实现的 public SFE 运行链、受控 profile、模型发现和流式文本。
+- WorkBuddy：新增双击 `Client.cmd` 的薄启动向导，复用登录/profile/目录/配置；已有部署直接沿用原 Node 配置恢复。见 [最简设计](blueprint/SIMPLE-LAUNCHER.md)。保留已实现的 public SFE 运行链、受控 profile、模型发现和流式文本。
 - Codex：新增固定版本官方 App Server、用户本地 ChatGPT device-code 登录、模型发现、文本流及终态清理。源码/自编协议测试不等于真实账号模型验收。
 - 豆包工作、千问办公：尚未实现 Adapter，不列入可用模型。
 
