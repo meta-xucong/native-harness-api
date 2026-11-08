@@ -70,7 +70,7 @@ function makePeer(kind, facts) {
       if (message.id === 'synthetic-form-1' && message.method === undefined) {
         exact(message.result,['action']); check(kind === 1 && message.result.action === 'cancel'); cancelled = true; facts.cancel_wire_seen = true; failLogin(); return;
       }
-      if (message.method === '$/cancel_request') { exact(message.params,['requestId']); check(kind === 3 && loginSeen && message.id === undefined && message.params.requestId === loginId); cancelled = true; facts.abort_wire_seen = true; return; }
+      if (message.method === '$/cancel_request') { exact(message.params,['requestId']); check(kind === 3 && loginSeen && message.id === undefined && message.params.requestId === loginId); cancelled = true; facts.abort_wire_seen = true; failLogin(); return; }
       if (message.method === 'account/read') {
         exact(message.params,[]);check(validId(message.id));check(++reads <= 2);
         if (kind === 0) { check(loginSeen); reply(message.id, reads === 1 ? unauthenticated() : snapshot()); }
@@ -122,28 +122,28 @@ export async function runClientMock(loadApi, { verifyEntry, timeoutMs = 30000, c
         result.initialization_verified = true;
         const request = operation => bounded(operation, remaining());
         if (kind === 0) {
-          await request(() => client.auth.login({ methodId: METHOD }, { signal: controller.signal }));
-          const before = await request(() => client.account.read({}, { signal: controller.signal }));
+          await request(() => client.auth.login({ methodId: METHOD }, { cancellationSignal: controller.signal }));
+          const before = await request(() => client.account.read({}, { cancellationSignal: controller.signal }));
           check(before.state === 'unauthenticated' && before.account === null && before.mode === null); result.ack_not_account_proof = true;
-          const after = await request(() => client.account.read({}, { signal: controller.signal }));
+          const after = await request(() => client.account.read({}, { cancellationSignal: controller.signal }));
           check(after.state === 'authenticated' && after.mode === 'managed' && after.account?.id === 'synthetic-account' && after.account?.authMethodId === METHOD); result.synthetic_account_read_verified = true;
-          const status = await request(() => client.auth.status({}, { signal: controller.signal }));
+          const status = await request(() => client.auth.status({}, { cancellationSignal: controller.signal }));
           check(status.authenticated === true); result.synthetic_status_verified = true;
         } else if (kind === 1) {
           let rejected = false;
-          try { await request(() => client.auth.login({ methodId: METHOD }, { signal: controller.signal })); } catch (error) { if (error instanceof Deadline) throw error; rejected = true; }
+          try { await request(() => client.auth.login({ methodId: METHOD }, { cancellationSignal: controller.signal })); } catch (error) { if (error instanceof Deadline) throw error; rejected = true; }
           check(rejected && result.cancel_wire_seen); result.cancel_rejected = true;
-          const account = await request(() => client.account.read({}, { signal: controller.signal })); check(account.state === 'unauthenticated');
+          const account = await request(() => client.account.read({}, { cancellationSignal: controller.signal })); check(account.state === 'unauthenticated');
         } else if (kind === 2) {
           let rejected = false;
-          try { await request(() => client.account.read({}, { signal: controller.signal })); } catch (error) { if (error instanceof Deadline) throw error; rejected = true; }
+          try { await request(() => client.account.read({}, { cancellationSignal: controller.signal })); } catch (error) { if (error instanceof Deadline) throw error; rejected = true; }
           check(rejected && peer.malformedSent); result.malformed_account_rejected = true;
         } else {
           const loginAbort = new AbortController();
           let timer, rejected = false;
           try {
             if (remaining() <= 0) throw new Deadline();
-            const pendingLogin = Promise.resolve(client.auth.login({ methodId: METHOD }, { signal: loginAbort.signal }));
+            const pendingLogin = Promise.resolve(client.auth.login({ methodId: METHOD }, { cancellationSignal: loginAbort.signal }));
             pendingLogin.catch(() => {}); // Observe before waiting for peer delivery.
             await bounded(() => peer.loginArrived, remaining());
             if (remaining() <= 0) throw new Deadline();
@@ -152,9 +152,10 @@ export async function runClientMock(loadApi, { verifyEntry, timeoutMs = 30000, c
             catch (error) { if (error instanceof Deadline) throw error; rejected = loginAbort.signal.aborted; }
           } finally { clearTimeout(timer); loginAbort.abort(); }
           if (rejected) await bounded(async () => { while (!result.abort_wire_seen) { if (remaining() <= 0) throw new Deadline(); await new Promise(resolve => setTimeout(resolve, 1)); } }, remaining());
+          // SDK cancellation only sends a notification; peer's -32800 settles the request.
           check(rejected && result.abort_wire_seen); result.timeout_rejected = true;
           peer.lateAck();
-          const account = await request(() => client.account.read({}, { signal: controller.signal }));
+          const account = await request(() => client.account.read({}, { cancellationSignal: controller.signal }));
           check(account.state === 'unauthenticated' && account.account === null && account.mode === null); result.late_ack_not_ready = true;
         }
         completed = true;

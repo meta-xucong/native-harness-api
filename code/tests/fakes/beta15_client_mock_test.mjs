@@ -13,15 +13,16 @@ function fakeApi(mode = '') {
       let reader, writer, reading, closed = false, nextId = 1;
       const handlers = new Map(), pending = new Map();
       const request = (method, params = {}, opts = {}) => {
+        assert.equal(Object.hasOwn(opts,'signal'),false); // Pinned SDK option is cancellationSignal.
         if (mode === 'premature-ack' && method === 'account/read') return Promise.resolve({state:'authenticated',mode:'managed',account:{id:'synthetic-account'}});
         const id = nextId++;
         return new Promise((resolve, reject) => {
           const abort = () => {
-            pending.delete(id); writer.write({jsonrpc:'2.0',method:'$/cancel_request',params:{requestId:id}}).catch(()=>{});
-            reject(new Error('PRIVATE_SECRET'));
+            if(mode === 'no-cancel-wire') return;
+            writer.write({jsonrpc:'2.0',method:'$/cancel_request',params:{requestId:id}}).catch(()=>{}); // SDK leaves response pending until peer settles it.
           };
-          pending.set(id, {resolve, reject, method, signal:opts.signal, abort});
-          opts.signal?.addEventListener('abort', abort, {once:true});
+          pending.set(id, {resolve, reject, method, signal:opts.cancellationSignal, abort});
+          opts.cancellationSignal?.addEventListener('abort', abort, {once:true});
           const send = () => writer.write({jsonrpc:'2.0',id,method,params}).catch(reject);
           if (mode === 'delayed-login' && method === 'auth/login' && index === 3) setTimeout(send, 60);
           else send();
@@ -99,6 +100,10 @@ const slowCleanup = fakeApi('cleanup-exhausts-operation'); const createNormal=sl
 slowCleanup.createClient = opts => {creationCount++;return createNormal(opts);};
 const expiredNext = await runClientMock(async()=>slowCleanup,{verifyEntry:async()=>{},timeoutMs:30});
 assert.equal(expiredNext.failure_stage,7);assert.equal(creationCount,1);assert.equal(expiredNext.peers_closed,1);count++;
+
+const noCancel = await runClientMock(async()=>fakeApi('no-cancel-wire'),{verifyEntry:async()=>{},timeoutMs:150});
+assert.equal(noCancel.success,false);assert.equal(noCancel.failure_stage,7);assert.equal(noCancel.cases_completed,3);
+assert.equal(noCancel.abort_wire_seen,false);assert.equal(noCancel.timeout_rejected,false);assert.equal(noCancel.clients_closed,4);assert.equal(noCancel.peers_closed,4);count++;
 
 const delayed = await runClientMock(async()=>fakeApi('delayed-login'),{verifyEntry:async()=>{},timeoutMs:2000});
 assert.equal(delayed.success,true);assert.equal(delayed.abort_wire_seen,true);assert.equal(delayed.late_ack_not_ready,true);assert.equal(delayed.peers_closed,4);count++;

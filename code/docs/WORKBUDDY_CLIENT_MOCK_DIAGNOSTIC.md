@@ -16,8 +16,17 @@ real-model readiness are literal false, including on a successful run.
    its payload; the peer returns a fixed cancellation error and unauthenticated
    readback. This does not exercise a real provider or prove credential rollback.
 3. Send one malformed account snapshot and require actual client rejection.
-4. Leave a fake login pending, abort its request locally, observe the correlated
-   cancellation wire message, send a late ACK and require an unauthenticated read.
+4. Leave a fake login pending, cancel it after the peer observes it, require the
+   correlated cancellation wire message, then let the synthetic peer respond with
+   a cancellation error. Send a late duplicate ACK and require an unauthenticated
+   read. The peer's error, not the abort signal alone, settles this request.
+
+The pinned SDK request option is `cancellationSignal`, while connection setup
+uses `signal`. A request cancellation sends `$/cancel_request`; it does not
+automatically reject or remove the pending response. The `timeout_rejected` flag
+here means a deadline triggered cancellation **and the synthetic peer confirmed
+it with an error**. It is not a claim of SDK-enforced timeout or native rollback.
+An independent outer deadline and owned shutdown still bound an unresponsive peer.
 
 Each case has a fresh client/peer. Request identifiers, methods, message count and
 order are bounded. Unknown operations fail; there are no session/model or real
