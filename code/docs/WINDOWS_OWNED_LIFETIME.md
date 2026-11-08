@@ -65,3 +65,22 @@ current-member census. Its portable regressions cover missing births, incomplete
 lists, wrong membership, count changes, tracker faults, failed waits and partial
 handle closure. Local validation: 784 tests, 54 platform skips; Windows results
 must be checked separately before treating this revision as a deployable repair.
+
+## Grace-deadline observation boundary
+
+A later hosted failure (`15a9b1`, package job `128657607653`) reported protocol
+completion, final EOF and complete cleanup, but no pre-cleanup natural exit.
+Those final facts do not prove that the child had stopped before forced cleanup.
+The recorded data cannot establish the exact timing of that particular failure.
+
+Both engines previously stopped sampling when the grace timer expired, even if
+an exit or EOF arrived during their final sleep. They now perform one additional
+read-only observation before any forced-close call, only while total cleanup
+budget remains. It drains finite batches of already queued frames, reads the
+retained host/whole-Job evidence, and checks EOF again. It does not sleep, extend
+the deadline, clear faults, retry execution or use post-close facts as evidence.
+A known zero exit, protocol acknowledgements and all existing ownership/thread
+cleanup requirements remain necessary for success. Nonzero or unknown exit codes
+remain unsuccessful. The finite `natural_observation` fields distinguish a missed
+boundary observation from a still-unconfirmed exit without logging process IDs,
+paths, prompts, account data or exception contents.

@@ -9,6 +9,7 @@ import math
 import queue
 import threading
 import time
+from .owned_exit_probe import pre_force_exit_probe
 from .public_sfe_session import PublicSfeSession
 
 
@@ -196,6 +197,7 @@ class PublicSfeOwnedSession:
                     'liveness': 'not_started', 'retry_safe': False}
         cleanup = {}
         natural = False
+        natural_observation = {'phase': 'grace', 'attempted': False}
         natural_code = None
         io_stopped = False
         self._send_deadline = deadline
@@ -246,6 +248,14 @@ class PublicSfeOwnedSession:
                         time.sleep(min(.01, max(0, graceful_end-time.monotonic())))
             except Exception:
                 self._fail('CLOSE_UNCONFIRMED')
+            if not natural:
+                # One final read-only observation BEFORE any close/kill. Never
+                # upgrade this evidence from the forced cleanup result below.
+                probe = pre_force_exit_probe(self, end, require_stdin=True)
+                natural_observation = probe['diagnostic']
+                if probe['natural']:
+                    natural = True
+                    natural_code = probe['exit_code']
             self._closing = True
             try:
                 self._writes.put_nowait(None)
@@ -279,7 +289,7 @@ class PublicSfeOwnedSession:
         return {'outcome': evidence['outcome'] if not self.fault else 'indeterminate',
                 'fault': self.fault, 'session': evidence, 'launch_attempted': True,
                 'cleanup_not_required': False, 'cleanup_confirmed': cleanup_confirmed,
-                'natural_owned_exit': natural, 'natural_exit_zero': zero,
+                'natural_owned_exit': natural, 'natural_exit_zero': zero, 'natural_observation': natural_observation,
                 'host_exit_code_before_cleanup': natural_code, 'stdin_eof_sent': self.stdin_eof_sent,
                 'stdout_eof_observed': self.eof, 'stderr_eof_observed': self.stderr_eof,
                 'cleanup': {**cleanup, 'io_threads_stopped': io_stopped},

@@ -10,6 +10,7 @@ import math
 import queue
 import threading
 import time
+from .owned_exit_probe import pre_force_exit_probe
 from .beta15_session import SessionCoordinator, decode_frame
 from .beta15_reducer import ContractError
 
@@ -207,6 +208,7 @@ class OwnedSessionEngine:
         cleanup = {'host_exited': None, 'owned_job_empty': None,
                    'handles_closed': False, 'cleanup_complete': False}
         natural = False
+        natural_observation = {'phase': 'grace', 'attempted': False}
         natural_exit_code = None
         io_stopped = False
         try:
@@ -270,6 +272,14 @@ class OwnedSessionEngine:
                     time.sleep(min(.02, max(0, graceful_end-time.monotonic())))
             except Exception:
                 self._fail('CLOSE_UNCONFIRMED')
+            if not natural:
+                # One final read-only observation BEFORE any close/kill. Never
+                # upgrade this evidence from the forced cleanup result below.
+                probe = pre_force_exit_probe(self, end, require_stdin=False)
+                natural_observation = probe['diagnostic']
+                if probe['natural']:
+                    natural = True
+                    natural_exit_code = probe['exit_code']
             self._closing = True
             try:
                 self._writes.put_nowait(None)
@@ -303,7 +313,7 @@ class OwnedSessionEngine:
                 'fault': self.fault, 'session': evidence, 'launch_attempted': True,
                 'cleanup_not_required': False,
                 'shutdown_acknowledged': self.shutdown_ack, 'natural_owned_exit': natural,
-                'natural_exit_zero': natural_zero,
+                'natural_exit_zero': natural_zero, 'natural_observation': natural_observation,
                 'host_exit_code_before_cleanup': natural_exit_code,
                 'stdout_eof_observed': self.eof, 'stderr_eof_observed': self.stderr_eof,
                 'cleanup': {**cleanup, 'io_threads_stopped': io_stopped},
