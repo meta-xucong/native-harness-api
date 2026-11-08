@@ -1,4 +1,5 @@
 """Real Bridge/Provider sockets and durable FakeHarness, never vendor execution."""
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack, contextmanager
 from dataclasses import replace
 from http.client import HTTPConnection
@@ -90,6 +91,40 @@ class OpenAIProviderBridgeTests(unittest.TestCase):
         finally:
             response.close()
             conn.close()
+
+    def test_concurrent_observers_leave_node_store_capacity(self):
+        entered, release = threading.Event(), threading.Event()
+        original = self.store.get_task_by_origin
+        def held_lookup(*args):
+            entered.set()
+            if not release.wait(5):
+                raise AssertionError("lookup was not released")
+            return original(*args)
+        self.store.get_task_by_origin = held_lookup
+        heartbeat_started = threading.Event()
+        heartbeat = self.runner.client.heartbeat
+        def observed_heartbeat(*args):
+            heartbeat_started.set()
+            return heartbeat(*args)
+        self.runner.client.heartbeat = observed_heartbeat
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            first = pool.submit(self.read, 'concurrent')
+            try:
+                self.assertTrue(entered.wait(5))
+                with self.pumping():
+                    self.assertTrue(heartbeat_started.wait(5))
+                    others = [pool.submit(self.read, 'concurrent') for _ in range(3)]
+                    for future in others:
+                        status, body = future.result(timeout=3)
+                        self.assertEqual(status, 503)
+                        self.assertEqual(body['error']['code'], 'PROVIDER_BUSY')
+                    release.set()
+                    self.assertEqual(first.result(timeout=5)[0], 200)
+            finally:
+                release.set()
+        self.assertEqual(self.fake.start_count, 1)
+        self.assertEqual(self.read('concurrent')[0], 200)
+        self.assertEqual(self.fake.start_count, 1)
 
     def test_bearer_without_private_headers_executes(self):
         with self.pumping():

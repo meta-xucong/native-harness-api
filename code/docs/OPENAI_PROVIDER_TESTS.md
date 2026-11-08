@@ -44,3 +44,7 @@ python code/integration/run_native_provider_chain.py \
 ## 未验证与未执行
 
 Windows本机执行：本云不可运行，相应60项skip，须看精确提交CI。真实官方账号/模型/积分、工具副作用、商业授权、TLS/容器网络/用户生产配置、真实计费：NOT_RUN或NOT_VERIFIED。未知usage不输出0；原生网关内部零值不是测量证据。无真实模型费用，无账号登录/凭据读取，无生产部署或合并。
+
+## 并发观察修复复审
+
+后续独立复审发现并修正源端并发占满 Bridge store 容量导致 Node 心跳退出的问题。当前测试为 1028 total（968 pass / 60 skip），Provider 25/25、真实 Bridge 23/23。确定性并发和六轮独立 JSON/SSE socket 压测已通过；完整范围、修正过程与未验证项见 [LOCAL_ACCEPTANCE](../../evidence/LOCAL_ACCEPTANCE.md)。新版精确提交 CI 需单独核验，历史运行不覆盖此改动。

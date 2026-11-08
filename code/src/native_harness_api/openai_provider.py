@@ -7,6 +7,7 @@ gateway retry. This process never retries submission or executes a model.
 import hashlib
 import math
 import time
+import threading
 import uuid
 
 from .contracts import Identity, canonical, checked_task, completion, digest, envelope, identifier, normalize_request
@@ -57,6 +58,7 @@ class OpenAIProvider:
             raise ValueError("Invalid bounded provider observation timing")
         self.services = self.core.services
         self.wait_seconds, self.poll_seconds = wait_seconds, poll_seconds
+        self._bridge_io = threading.Lock()
 
     def handle(self, method, path, headers, payload):
         service = self.core.authenticate(headers)
@@ -78,7 +80,7 @@ class OpenAIProvider:
         operation = "provider-" + (hashlib.sha256(key.encode()).hexdigest() if key else uuid.uuid4().hex)
         identity = Identity(service.source, *service.owner, operation)
         request_digest = digest(request)
-        task = service.bridge.lookup(identity.origin_key)
+        task = self._call_bridge(service.bridge.lookup, identity.origin_key)
         if task is None:
             if resume is not None:
                 raise ChannelError("TASK_NOT_FOUND", 404, accepted=False)
@@ -90,7 +92,7 @@ class OpenAIProvider:
                 raise ChannelError("MODEL_NOT_AVAILABLE", 400, accepted=False, param="model")
             frozen_binding = digest(binding.wire())
             try:
-                task = service.bridge.submit(envelope(identity, request, binding, service.bridge.ledger_instance))
+                task = self._call_bridge(service.bridge.submit, envelope(identity, request, binding, service.bridge.ledger_instance))
             except ChannelError as error:
                 if error.accepted is False:
                     raise
@@ -113,9 +115,19 @@ class OpenAIProvider:
                 if task.get("result") or task.get("result_expired"):
                     return 200, completion(task), {}
                 self._pause(task, deadline)
-                task = service.bridge.task(context[4])
+                task = self._call_bridge(service.bridge.task, context[4])
         except ChannelError as error:
             raise self._accepted_error(error) from None
+
+    def _call_bridge(self, method, *args):
+        # One source call leaves the Bridge's other bounded slot for the Node.
+        # Refuse contention immediately: no waiter queue, retry or execution slot.
+        if not self._bridge_io.acquire(blocking=False):
+            raise ChannelError("PROVIDER_BUSY", 503)
+        try:
+            return method(*args)
+        finally:
+            self._bridge_io.release()
 
     @staticmethod
     def _accepted_error(error):
@@ -158,8 +170,9 @@ class OpenAIProvider:
                 if task.get("result") or task.get("result_expired"):
                     final = completion(task)
                 else:
-                    page = project_events(bridge.events(task_id, cursor), task, identity,
-                                          request_digest, frozen_binding, bridge, cursor)
+                    page = self._call_bridge(lambda: project_events(
+                        bridge.events(task_id, cursor), task, identity,
+                        request_digest, frozen_binding, bridge, cursor))
                     final = None
                     for event in page["events"]:
                         kind, data = event["type"], event["data"]
@@ -192,7 +205,7 @@ class OpenAIProvider:
                 yield b": observing\n\n"
                 # Refresh liveness and validate the same task. Durable event
                 # pages still own the sequence; no subsequent call can submit.
-                task = bridge.task(task_id)
+                task = self._call_bridge(bridge.task, task_id)
                 self._check(task, context)
         except ChannelError as error:
             yield sse(self._accepted_error(error).body())

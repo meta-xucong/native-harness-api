@@ -1,6 +1,6 @@
 # Native Harness 普通 OpenAI-compatible Provider 蓝图
 
-日期：2026-11-08 UTC。状态：**独立设计审计修订完成；见 [设计审计](NATIVE-OPENAI-PROVIDER-DESIGN-AUDIT.md)。尚未编码**。
+日期：2026-11-08 UTC。状态：**已实现并补充并发观察复审；见 [设计审计](NATIVE-OPENAI-PROVIDER-DESIGN-AUDIT.md) 与 [验收记录](../evidence/LOCAL_ACCEPTANCE.md)。真实账号未验**。
 
 ## 1. 目标与覆盖关系
 
@@ -17,7 +17,7 @@
 | 历史 Sub2API fork（仅旧合同参考，本轮不改） | `b25ff6169885c66308ed3dffd93da9c3cb3fcf79` |
 | **原生 Sub2API** `Wei-Shaw/sub2api` main | `6b4b37db43443b5e88e424fe3c69602cc3810dfb`，本轮只读核对 |
 
-不是全量 OpenAI 实现，不新增 Responses、多租户沙箱、取消/审批 API、计费系统、路由数据库、队列或后台重试。仅一个可信本地资源域、一个 Node 总槽 1，非收费试验。
+不是全量 OpenAI 实现，不新增 Responses、多租户沙箱、取消/审批 API、计费系统、路由数据库、队列或后台重试。仅一个可信本地资源域、一个 Provider 进程、一个 Node 总槽 1，非收费试验。普通入口同时仅允许一个源端 Bridge IO，竞争立即拒绝而非排队；不持锁跨流式 yield，为 Node 保留既有 Bridge 有界容量。此限制不改变任务/幂等/未知状态语义。
 
 ## 2. 架构与身份
 

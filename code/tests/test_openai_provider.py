@@ -5,6 +5,8 @@ from email.message import Message
 import http.client
 import json
 import unittest
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import urlsplit
 from native_harness_api.contracts import Binding
 from native_harness_api.errors import ChannelError
@@ -66,6 +68,68 @@ class ProviderTests(unittest.TestCase):
         with self.assertRaises(ChannelError) as caught: callback()
         self.assertEqual(caught.exception.code,code)
         return caught.exception
+    def test_concurrent_source_io_is_rejected_without_queue_or_retry(self):
+        entered, release = threading.Event(), threading.Event()
+        original = self.bridge.lookup
+        def held_lookup(origin):
+            entered.set()
+            if not release.wait(5):
+                raise AssertionError("test did not release lookup")
+            return original(origin)
+        self.bridge.lookup = held_lookup
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            first = pool.submit(self.call)
+            try:
+                self.assertTrue(entered.wait(5))
+                others = [pool.submit(self.call) for _ in range(3)]
+                for future in others:
+                    with self.assertRaises(ChannelError) as caught:
+                        future.result(timeout=2)
+                    self.assertEqual((caught.exception.code, caught.exception.status),
+                                     ("PROVIDER_BUSY", 503))
+                self.assertEqual(self.bridge.submissions, 0)
+            finally:
+                release.set()
+            self.assertEqual(first.result(timeout=5)[0], 200)
+        self.assertEqual(self.bridge.lookups, 1)
+        self.assertEqual(self.bridge.submissions, 1)
+        self.assertEqual(self.call()[0], 200)
+        self.assertEqual(self.bridge.submissions, 1)
+
+    def test_terminal_projection_task_read_uses_source_io_budget(self):
+        self.bridge.ready = False
+        self.bridge.pages = [page(("task_terminal", {"outcome":"succeeded",
+            "liveness":"stopped_confirmed"}), terminal=1)]
+        entered, release = threading.Event(), threading.Event()
+        original = self.bridge.task
+        def held_task(task_id):
+            entered.set()
+            if not release.wait(5):
+                raise AssertionError("terminal read not released")
+            return original(task_id)
+        self.bridge.task = held_task
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            first = pool.submit(self.stream)
+            try:
+                self.assertTrue(entered.wait(5))
+                self.assertEqual(self.error("PROVIDER_BUSY", self.call).status, 503)
+            finally:
+                release.set()
+            self.assertIn("data: [DONE]", first.result(timeout=5))
+        self.assertEqual(self.bridge.submissions, 1)
+
+    def test_source_io_lock_released_on_exception_and_stream_yield(self):
+        def fail():
+            raise ChannelError("BRIDGE_TRANSPORT_UNCERTAIN", 504)
+        self.error("BRIDGE_TRANSPORT_UNCERTAIN", lambda: self.provider._call_bridge(fail))
+        self.assertEqual(self.call()[0], 200)
+        _, stream, _ = self.call(dict(request(), stream=True))
+        frames = iter(stream.frames)
+        next(frames)
+        # A slow consumer must not hold the source I/O budget across yields.
+        self.assertEqual(self.call()[0], 200)
+        self.assertIn(b"data: [DONE]", b"".join(frames))
+
     def test_standard_bearer_only_and_models(self):
         status,value,_ = self.provider.handle("GET","/v1/models",self.headers(None),None)
         self.assertEqual(status,200)

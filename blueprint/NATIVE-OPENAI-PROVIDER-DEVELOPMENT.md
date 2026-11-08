@@ -78,3 +78,9 @@ unknown用量无usage字段（包括流），include_usage只是被接受的请�
 发布前独审只检查本增量关键路径、兼容恢复、事实声明及上述实际结果；不无限扩展邻接防御工作。真实账号/厂商配额/本机登录复用/模型/收费/TLS/生产部署/商业许可始终另列NOT_RUN或NOT_VERIFIED。
 
 观察循环与HTTP写出共用同一截止时刻，末尾错误flush预留在预算内，不加额外1秒。Bridge单次IO仍使用既有有界超时，正在进行的IO可能晚于观察截止才返回；这不是端到端硬实时deadline。预算用尽或客户端已断开时可能只收到不完整EOF，没有成功finish/[DONE]，不代表任务取消。
+
+## 并发观察复审修正（2026-11-08）
+
+实际 Bridge HTTP 并发复审发现，多个普通 Provider 请求可同时观察同一任务并占满 Bridge 既有的两个有界 store 位置，导致 Node 心跳收到 `503/store_busy` 后退出。最小修正仅在普通 Provider 入口限制同时进行的 Bridge 源端 IO 为一个：非阻塞锁，竞争立即拒绝（lookup 为 `503/PROVIDER_BUSY`；submit 阶段沿用保守 `409/EXECUTION_UNCERTAIN`，已接受观察为 `409/PROVIDER_BUSY`），不等待、不重试、不新增任务队列；已接受任务的观察仍按既有合同返回未知/冲突，不伪造失败或成功。流式 yield、轮询间隔和客户端消费期间不持锁。Bridge、Node、Adapter 和原生 Sub2API 不变。
+
+该限制作用于一个 Provider 进程，与现有单 Provider/单 Node 试验部署合同一致。它不是跨进程限流器，不承诺抵御其他源客户端、多个 Provider 副本或已超时但仍在 Bridge 内执行的操作。并发拒绝不代表任务不存在，也不代表安全自动重发无幂等键的请求。重新观察已知 key 仍回到原任务，不重新推理。

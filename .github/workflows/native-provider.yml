@@ -53,3 +53,35 @@ jobs:
         env:
           PYTHONPATH: native/code/src:native/code/integration:bridge/src
         run: python native/code/integration/run_native_provider_chain.py --upstream upstream --bridge bridge
+  windows-regression:
+    runs-on: windows-2022
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          path: native
+          persist-credentials: false
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          repository: meta-xucong/alchemy-render-bridge
+          ref: 52dc083207a8a02dfc14fe2ec1ea10f0cc0a54a8
+          path: bridge
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.13.17'
+      - name: Install pinned Bridge dependencies only
+        run: python -m pip install fastapi==0.141.1 anyio==4.15.1 pydantic==2.13.4 Pillow==12.3.0 httpx==0.28.1 uvicorn==0.41.0
+      - name: Windows regression and real Bridge HTTP
+        shell: pwsh
+        working-directory: native/code
+        run: |
+          $env:PYTHONPATH = 'src'
+          python -m unittest discover -s tests
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -m compileall -q src integration
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $env:PYTHONPATH = 'src;integration;tests;../../bridge/src'
+          python -m unittest test_openai_provider_bridge test_real_bridge test_multi_harness_bridge -v
+          exit $LASTEXITCODE
