@@ -1,0 +1,54 @@
+name: Public Harness beta16 empty WorkBuddy catalog diagnostic
+on:
+  push:
+    paths:
+      - 'code/tools/public_harness_catalog.py'
+      - 'code/tools/public_harness_catalog_assets.py'
+      - 'code/tools/public_harness_catalog_protocol.py'
+      - 'code/tests/test_public_harness_catalog.py'
+      - 'code/tests/test_public_harness_catalog_assets.py'
+      - 'code/tests/test_public_harness_catalog_protocol.py'
+      - '.github/workflows/public-harness-catalog.yml'
+permissions:
+  contents: read
+jobs:
+  empty-catalog:
+    if: github.run_attempt == 1
+    runs-on: windows-2022
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.13.17'
+      - name: Offline fixtures including actual Windows owned authored peer
+        shell: pwsh
+        working-directory: code
+        env:
+          PYTHONPATH: src
+        run: |
+          python -m unittest discover -s tests -v
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -m compileall -q tools tests
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: One complete pinned public SFE, fresh managed account, no login or model
+        shell: pwsh
+        env:
+          PYTHONPATH: code/src
+        run: |
+          $sevenZip = Join-Path $env:ProgramFiles '7-Zip/7z.exe'
+          if (-not (Test-Path -LiteralPath $sevenZip -PathType Leaf)) { throw 'RUNNER_7ZIP_MISSING' }
+          $root = Join-Path $env:RUNNER_TEMP 'public-harness-catalog-once'
+          $summary = Join-Path $env:GITHUB_WORKSPACE 'public-harness-catalog-summary.json'
+          python code/tools/public_harness_catalog.py --seven-zip "$sevenZip" --run-root "$root" --summary "$summary"
+          exit $LASTEXITCODE
+      - name: Sanitized own summary only
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: public-harness-catalog-sanitized-summary
+          path: public-harness-catalog-summary.json
+          if-no-files-found: warn
+          retention-days: 7
