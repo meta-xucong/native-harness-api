@@ -43,6 +43,9 @@ class RuntimeConfig:
     def load(cls, path):
         with Path(path).open("rb") as handle:
             value = parse_json(handle.read(65_537))
+        if isinstance(value, dict) and value.get("mode") == "workbuddy_local_trial":
+            from .native_trial_runtime import NativeTrialConfig
+            return NativeTrialConfig.from_value(value)
         if not isinstance(value, dict) or value.pop("mode", None) != "p1b_integration":
             raise ValueError("Explicit p1b_integration mode required")
         if value.pop("adapter", None) != "fake":
@@ -67,8 +70,7 @@ class RuntimeConfig:
             if not isinstance(part, str):
                 raise ValueError("Invalid test owner")
             identifier(part)
-        if not self.binding.model_alias.startswith("synthetic-") or not self.binding.native_model.startswith("fake-"):
-            raise ValueError("Only synthetic fake bindings are enabled")
+        self._validate_binding()
         if type(self.accepting_new) is not bool or type(self.port) is not int or not 0 <= self.port <= 65535:
             raise ValueError("Invalid admission or loopback port")
         if (type(self.wait_seconds) not in (int, float) or not 0 <= self.wait_seconds <= 30
@@ -81,6 +83,10 @@ class RuntimeConfig:
         names = (self.source_token_env, self.node_token_env, self.facade_token_env)
         if len(set(names)) != 3 or any(not isinstance(n, str) or not re.fullmatch(r"[A-Z_][A-Z0-9_]*", n) for n in names):
             raise ValueError("Distinct credential environment variable names are required")
+
+    def _validate_binding(self):
+        if not self.binding.model_alias.startswith("synthetic-") or not self.binding.native_model.startswith("fake-"):
+            raise ValueError("Only synthetic fake bindings are enabled")
 
     def credential(self, name, environ=None):
         value = (os.environ if environ is None else environ).get(name)
