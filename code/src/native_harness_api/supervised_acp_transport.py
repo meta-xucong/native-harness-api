@@ -74,13 +74,17 @@ class SupervisedACPTransport:
         with self._lock:
             if self._closed_facts is not None:
                 return dict(self._closed_facts)
-            facts = {'host_exited': None, 'owned_job_empty': None,
+            facts = {'host_exited': None, 'host_exit_code': None, 'owned_job_empty': None,
                      'handles_closed': self._cleanup_complete, 'cleanup_complete': self._cleanup_complete, 'code': 'UNOBSERVED'}
             if self._owner is None:
                 return facts
             try:
                 facts['host_exited'] = self._owner.host_exited()
                 facts['owned_job_empty'] = self._owner.wait_empty(0)['owned_job_empty']
+                if facts['host_exited'] is True:
+                    code = self._owner.exit_code()
+                    if type(code) is int:
+                        facts['host_exit_code'] = code
                 facts['code'] = 'OBSERVED'
             except Exception:
                 # Partial successful observation is not a cleanup/stop guarantee.

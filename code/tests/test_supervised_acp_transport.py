@@ -21,6 +21,8 @@ class FakeOwner:
     def host_exited(self):
         if self.fail_query: raise OSError('secret diagnostic must not escape')
         return self.exited
+    def exit_code(self):
+        return 0 if self.exited else None
     def wait_empty(self, timeout):
         return {'owned_job_empty': self.empty}
     def close(self, timeout):
@@ -54,6 +56,17 @@ class TransportTests(unittest.TestCase):
         self.assertEqual(transport.close(.1), facts)
         self.assertEqual(owner.calls, [.2])
         with self.assertRaises(TransportError): _ = transport.stdin
+    def test_observe_reports_exact_exit_code_only_after_exit(self):
+        owner=FakeOwner();transport=self.launch(owner)
+        self.assertIsNone(transport.observe()['host_exit_code'])
+        owner.exited=True
+        self.assertEqual(transport.observe()['host_exit_code'],0)
+        owner.exit_code=lambda:7
+        self.assertEqual(transport.observe()['host_exit_code'],7)
+        owner.exit_code=lambda:False
+        self.assertIsNone(transport.observe()['host_exit_code'])
+        transport.close()
+
     def test_failed_cleanup_keeps_owner_and_retries(self):
         owner = FakeOwner(); transport = self.launch(owner); owner.fail_close = True
         facts = transport.close(.1)
