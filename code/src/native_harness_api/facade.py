@@ -70,7 +70,7 @@ class Facade:
             models = sorted(bindings) if service.accepting_new else []
             owner = "workbuddy-local-trial" if self.mode == "workbuddy_local_trial" else ("p1a-synthetic" if self.mode == "offline_prototype" else "p1b-synthetic")
             return 200, {"object": "list", "data": [{"id": m, "object": "model", "owned_by": owner} for m in models]}, {}
-        if method != "POST" or path != "/v1/chat/completions":
+        if method != "POST" or path not in {"/v1/chat/completions", "/v1/native-harness/events"}:
             raise ChannelError("NOT_FOUND", 404)
         if self.mode in {"p1b_integration", "workbuddy_local_trial"}:
             if (single_header(headers, "X-Native-Source") != service.source
@@ -84,6 +84,14 @@ class Facade:
         frozen_binding = single_header(headers, "X-Native-Binding-Digest")
         if admission not in {"true", "false"}:
             raise ChannelError("INVALID_HEADER", 400)
+        events = path == "/v1/native-harness/events"
+        cursor = 0
+        if events:
+            from .event_contract import parse_cursor
+            cursor = parse_cursor(single_header(headers, "X-Native-Event-Cursor"))
+            # A nonzero cursor can only refer to a previously admitted task.
+            if cursor:
+                admission = "false"
         request = normalize_request(payload)
         request_digest = digest(request)
         task = service.bridge.lookup(identity.origin_key)
@@ -97,6 +105,15 @@ class Facade:
             if binding is None or binding.model_alias != request["model"] or digest(binding.wire()) != frozen_binding:
                 raise ChannelError("MODEL_NOT_AVAILABLE", 400, accepted=False)
             task = service.bridge.submit(envelope(identity, request, binding, service.bridge.ledger_instance))
+        if events:
+            from .event_contract import project_events
+            checked_task(task, identity, request_digest, service.bridge.ledger_instance)
+            if digest(task["request"]["binding"]) != frozen_binding:
+                raise ChannelError("BRIDGE_BINDING_MISMATCH")
+            page = service.bridge.events(task["remote_task_id"], cursor)
+            result = project_events(page, task, identity, request_digest,
+                                    frozen_binding, service.bridge, cursor)
+            return 200, result, {"X-Native-Replay": str(replay).lower(), "X-Native-Accepted": "true"}
         deadline = time.monotonic() + self.wait_seconds
         while True:
             checked_task(task, identity, request_digest, service.bridge.ledger_instance)

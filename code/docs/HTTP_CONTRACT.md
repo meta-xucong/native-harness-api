@@ -1,3 +1,5 @@
+> 后续真实增量扩展以 [native-events-v1](NATIVE_EVENT_STREAM.md) 为准；下文非流式为历史基线。
+
 # P1b 实施补充（P1a 合同基线保留在下文）
 
 真实 Bridge 扩展已在 `alchemy-render-bridge/work/native-harness-p1b` 实现分支落地，下表“现有 main 未实现”描述的是原基线 `cf1e72ec…`，不是本分支完成状态。当前测试仍全部 synthetic；完整真实 PostgreSQL/模型集成未验收。

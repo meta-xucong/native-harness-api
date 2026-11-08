@@ -46,7 +46,9 @@ class HTTPTransport:
         self.opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
 
     def request(self, method, path, payload=None, *, extra_headers=None):
-        if not path.startswith("/") or path.startswith("//") or "?" in path or "#" in path:
+        query_ok = (method == "GET" and re.fullmatch(
+            r"/bridge/v1/tasks/[A-Za-z0-9_.:-]+/harness-events\?after=(0|[1-9][0-9]{0,15})&limit=8", path))
+        if not path.startswith("/") or path.startswith("//") or ("?" in path and not query_ok) or "#" in path:
             raise ValueError("Invalid internal path")
         headers = {"Authorization": "Bearer " + self.token, "Accept": "application/json"}
         if extra_headers:
@@ -136,6 +138,12 @@ class BridgeClient:
     def submit(self, payload):
         self.capabilities()
         return self.http.request("POST", "/bridge/v1/tasks", payload)
+
+    def events(self, task_id, cursor):
+        from .event_contract import parse_cursor
+        cursor = parse_cursor(str(cursor))
+        return self.http.request("GET", "/bridge/v1/tasks/" + self.key(task_id)
+                                 + "/harness-events?after=" + str(cursor) + "&limit=8")
 
     def task(self, task_id):
         return self.http.request("GET", "/bridge/v1/tasks/" + self.key(task_id))

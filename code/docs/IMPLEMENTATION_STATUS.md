@@ -1,3 +1,5 @@
+> 后续真实增量扩展以 [native-events-v1](NATIVE_EVENT_STREAM.md) 为准；下文非流式为历史基线。
+
 # P1b 实现状态
 
 新增 P2 独立 WorkBuddy bundled-runtime 本机试验程序见 [本机试验指南](WORKBUDDY_LOCAL_TRIAL.md)。它支持用户本地显式确认一次原生 ACP prompt，但不改下列 P1b 正式渠道门禁，真实账号/模型尚未运行；源码和发行包另行审计，不能用旧 P1b 审计覆盖。
