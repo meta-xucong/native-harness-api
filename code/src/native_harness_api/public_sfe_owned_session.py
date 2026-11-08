@@ -163,7 +163,7 @@ class PublicSfeOwnedSession:
         ]
 
     def run(self, command, cwd, env, *, workspace, model_id, prompt,
-            expected_account_digest, timeout=120, cleanup_timeout=10, cancellation=None):
+            expected_account_digest, timeout=120, cleanup_timeout=10, cancellation=None, on_event=None):
         if self._attempted:
             raise ValueError('SINGLE_ATTEMPT_ONLY')
         self._attempted = True
@@ -173,7 +173,7 @@ class PublicSfeOwnedSession:
         if cancellation is not None and not isinstance(cancellation, threading.Event):
             raise ValueError('THREADING_EVENT_REQUIRED')
         deadline = time.monotonic() + timeout
-        self.protocol = PublicSfeSession(deadline=deadline, expected_account_digest=expected_account_digest)
+        self.protocol = PublicSfeSession(deadline=deadline, expected_account_digest=expected_account_digest, on_event=on_event)
         if cancellation is not None and cancellation.is_set():
             return {'outcome': 'cancelled', 'fault': None, 'session': self.protocol.evidence(),
                     'launch_attempted': False, 'cleanup_not_required': True,

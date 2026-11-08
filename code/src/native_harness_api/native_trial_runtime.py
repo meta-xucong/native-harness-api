@@ -109,7 +109,7 @@ class NativeTrialConfig(RuntimeConfig):
         adapter = PublicSfeAdapter(evidence_root, bindings=self.configured_bindings, invoke=self.invoke)
         return Runner(client, journal, adapter, policy=policy)
 
-    def invoke(self, *, model_id, messages):
+    def invoke(self, *, model_id, messages, on_event=None, cancellation=None):
         if model_id not in {b.native_model for b in self.configured_bindings} or len(messages) != 1 or messages[0]['role'] != 'user':
             raise ValueError('One bound user prompt required')
         verify_assets, _, open_profile = _tools()
@@ -136,7 +136,9 @@ class NativeTrialConfig(RuntimeConfig):
                     [str(assets['executable']), '--stdio', '--strict-mcp-config', '--product-config', str(assets['product_config'])],
                     workspace, env, workspace=str(workspace), model_id=model_id,
                     prompt=messages[0]['content'], expected_account_digest=expected_account,
-                    timeout=self.execution_timeout, cleanup_timeout=self.cleanup_timeout)
+                    timeout=self.execution_timeout, cleanup_timeout=self.cleanup_timeout,
+                    **({} if on_event is None else {'on_event': on_event}),
+                    **({} if cancellation is None else {'cancellation': cancellation}))
                 clean = result.get('cleanup_confirmed') is True
                 return result
             finally:

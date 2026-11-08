@@ -11,6 +11,7 @@ from pathlib import Path
 import sqlite3
 import stat
 
+from .native_live_events import LiveEventPump
 from .contracts import Binding, MAX_RESULT_BYTES, canonical, digest, identifier, normalize_request
 
 PENDING = {'outcome': 'pending', 'liveness': 'unknown', 'code': 'EXECUTION_UNCERTAIN'}
@@ -59,6 +60,7 @@ def project_result(value, model):
 
 class PublicSfeAdapter:
     synthetic = False
+    supports_live_events = True
 
     def __init__(self, root, *, binding=None, bindings=None, invoke):
         if (binding is None) == (bindings is None):
@@ -75,6 +77,7 @@ class PublicSfeAdapter:
         self.db = self.root / 'sfe-evidence.sqlite'
         self._check_storage()
         self.bindings, self.invoke = approved, invoke
+        self._retained_event_pumps = []
         with self._connect() as con:
             con.execute('CREATE TABLE IF NOT EXISTS evidence (grant_id TEXT PRIMARY KEY, task_id TEXT UNIQUE NOT NULL, request_hash TEXT NOT NULL, result TEXT)')
 
@@ -116,7 +119,7 @@ class PublicSfeAdapter:
                                'identity': task['identity'], 'ledger': task['ledger_instance']})
         return task_id, grant_id, request_hash, request
 
-    def start(self, task, grant):
+    def start(self, task, grant, *, publish_event=None):
         task, grant = copy.deepcopy(task), copy.deepcopy(grant)
         task_id, grant_id, fingerprint, request = self._identity(task, grant)
         with self._connect() as con:
@@ -129,12 +132,22 @@ class PublicSfeAdapter:
             con.execute('INSERT INTO evidence VALUES(?,?,?,NULL)', (grant_id, task_id, fingerprint))
         # Committed intent survives every exception, interruption or process loss.
         # No exception message or raw vendor evidence is persisted or forwarded.
+        pump = None
         try:
+            if publish_event is not None:
+                pump = LiveEventPump(publish_event)
+                self._retained_event_pumps.append(pump)
             model = task['request']['binding']['native_model']
-            evidence = self.invoke(model_id=model, messages=request['messages'])
+            options = {} if pump is None else {'on_event': pump.enqueue, 'cancellation': pump.failed}
+            evidence = self.invoke(model_id=model, messages=request['messages'], **options)
             result = project_result(evidence, model)
         except Exception:
             result = dict(PENDING)
+        if pump is not None:
+            if not pump.finish():
+                result = dict(PENDING)
+            if not pump.thread.is_alive():
+                self._retained_event_pumps.remove(pump)
         with self._connect() as con:
             con.execute('UPDATE evidence SET result=? WHERE grant_id=? AND result IS NULL', (canonical(result), grant_id))
         return result

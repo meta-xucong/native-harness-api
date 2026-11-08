@@ -371,7 +371,12 @@ class Runner:
             try:
                 if self.before_start is not None:
                     self.before_start()
-                value = self.adapter.start(task, grant)
+                if getattr(self.adapter, 'supports_live_events', False) is True:
+                    def publish_event(seq, event):
+                        return self.client.event(task_id, claim['claim_id'], grant['start_grant_id'], seq, event)
+                    value = self.adapter.start(task, grant, publish_event=publish_event)
+                else:
+                    value = self.adapter.start(task, grant)
                 return self._accept(record, value)
             except Exception:
                 return self._observe(record, code='OBSERVATION_ERROR')

@@ -42,9 +42,11 @@ class SessionCoordinator:
     transport must persist its execution intent before sending any command, enforce
     native readiness/authorization, and retain process ownership independently.
     """
-    def __init__(self, *, deadline, clock=time.monotonic):
+    def __init__(self, *, deadline, clock=time.monotonic, on_event=None):
         check(type(deadline) in (int, float) and math.isfinite(deadline))
         check(callable(clock))
+        check(on_event is None or callable(on_event))
+        self._on_event = on_event
         self.deadline, self.clock = deadline, clock
         self.phase = 'new'
         self.session_id = None
@@ -58,6 +60,14 @@ class SessionCoordinator:
         self.close_acknowledged = False
         self._cancel_issued = False
         self.prompt_intent_issued = False
+
+    def _emit_event(self, event):
+        # Caller supplies only a bounded nonblocking enqueue. Sample the actual
+        # coordinator clock after it, not the reducer's cached dispatch sample.
+        try:
+            return self._on_event(event)
+        finally:
+            self.tick()
 
     def _fail(self, reason):
         if self.fault is None:
@@ -124,7 +134,7 @@ class SessionCoordinator:
                                           # Use the validated sample for this
                                           # serialized entry; do not call an
                                           # arbitrary clock twice mid-dispatch.
-                                          clock=lambda: self._last_now)
+                                          clock=lambda: self._last_now, on_event=self._emit_event if self._on_event is not None else None)
             self.prompt_intent_issued = True
             self.phase = 'running'
             return self._request('session/prompt', {'sessionId': self.session_id,

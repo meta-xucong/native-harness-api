@@ -173,6 +173,19 @@ class NodeClient:
                                  {"claim_id": claim_id, "start_grant_id": grant_id,
                                   "outcome": outcome, "liveness": liveness, "code": code})
 
+    def event(self, task_id, claim_id, grant_id, event_seq, event):
+        from .native_live_events import checked_event, MAX_EVENTS
+        event, _ = checked_event(event)
+        if type(event_seq) is not int or not 1 <= event_seq <= MAX_EVENTS:
+            raise ValueError("LIVE_EVENT_SEQUENCE_INVALID")
+        receipt = self.http.request("POST", f"/bridge/node/v1/tasks/{BridgeClient.key(task_id)}/harness-event",
+            {"claim_id": claim_id, "start_grant_id": grant_id, "event_seq": event_seq, "event": event})
+        expected = {"remote_task_id": task_id, "claim_id": claim_id, "start_grant_id": grant_id,
+                    "event_seq": event_seq, "accepted": True}
+        if receipt != expected or type(receipt.get("event_seq")) is not int or receipt.get("accepted") is not True:
+            raise ChannelError("BRIDGE_INVALID_EVENT_ACK")
+        return True
+
     def result(self, task_id, claim_id, grant_id, result):
         receipt = self.http.request("POST", f"/bridge/node/v1/tasks/{BridgeClient.key(task_id)}/harness-result",
                                     {"claim_id": claim_id, "start_grant_id": grant_id, "result": result})

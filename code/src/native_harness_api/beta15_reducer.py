@@ -6,6 +6,7 @@ This is observation evidence, not permission to execute or release an owned slot
 """
 from __future__ import annotations
 import json
+import inspect
 import math
 import re
 import time
@@ -121,7 +122,7 @@ def deny_permission(_request):
 
 class SessionReducer:
     """Single prompt attempt, ordered updates, correlation bound only by response."""
-    def __init__(self, session_id, *, deadline, max_events=256, max_bytes=262144, clock=time.monotonic):
+    def __init__(self, session_id, *, deadline, max_events=256, max_bytes=262144, clock=time.monotonic, on_event=None):
         self.session_id=text(session_id)
         check(type(deadline) in (float,int) and math.isfinite(deadline))
         check(type(max_events) is int and 0<max_events<=4096)
@@ -132,6 +133,32 @@ class SessionReducer:
         self.terminal_reason=None;self.cancel_requested=False;self.insert_acknowledged=False
         self._buffer=[];self._events=0;self._bytes=0;self._messages={};self._terminal=False
         self._error_seen=False
+        check(on_event is None or callable(on_event))
+        self._on_event=on_event;self._emitted_bytes=0;self._emitted_events=0
+        self._emitting=False
+
+    def _emit(self, event):
+        """Trusted sink must synchronously enqueue without blocking/reentrancy.
+
+        None/True acknowledges delivery; backpressure, async callbacks and errors
+        invalidate this attempt. No callback exception text or metadata escapes.
+        The sink must independently bound its queue; this layer bounds emission.
+        """
+        if self._on_event is None or self.fault:return
+        try:
+            check(not self._emitting)
+            event,size=snapshot(event,6*262144+4096)
+            self._emitted_bytes+=size;self._emitted_events+=1
+            if self._emitted_bytes>16*1024*1024 or self._emitted_events>self.max_events:
+                self._fail('EVENT_SINK_OVERFLOW');return
+            self._emitting=True
+            result=self._on_event(event)
+            if inspect.iscoroutine(result):result.close()
+            check(result is None or result is True)
+            self.tick(self.clock())
+        except Exception:self._fail('EVENT_SINK_FAILED')
+        finally:self._emitting=False
+
 
     def _fail(self, code):
         if self.fault is None:self.fault=code
@@ -153,6 +180,7 @@ class SessionReducer:
         return {'sessionId':self.session_id}
 
     def acknowledge(self, response):
+        if self._emitting:self._fail('EVENT_SINK_FAILED');return
         self.tick(self.clock())
         if self.fault:return
         try:
@@ -166,6 +194,7 @@ class SessionReducer:
         except ContractError:self._fail('INVALID_ACK')
 
     def update(self, envelope):
+        if self._emitting:self._fail('EVENT_SINK_FAILED');return
         self.tick(self.clock())
         if self.fault:return
         try:
@@ -197,6 +226,7 @@ class SessionReducer:
             if content.get('type')=='text':
                 value=content.get('text');check(type(value) is str)
                 self._messages[mid]=self._messages.get(mid,'')+value
+                self._emit({'type':'text_snapshot','text':''.join(self._messages.values())})
             else:self._fail('UNSUPPORTED_CONTENT')
         elif kind=='agent_message':
             check(not self._terminal);mid=text(update.get('messageId'))
@@ -209,6 +239,7 @@ class SessionReducer:
                     check(type(content) is dict and content.get('type')=='text' and type(content.get('text')) is str)
                     parts.append(content['text'])
                 self._messages[mid]=''.join(parts)
+                self._emit({'type':'text_snapshot','text':''.join(self._messages.values())})
         elif kind==ERROR_UPDATE:
             check(not self._terminal)
             error=update.get('error')
@@ -219,7 +250,8 @@ class SessionReducer:
         elif kind=='state_update':
             state=update.get('state');check(state in ('running','requires_action','idle','unknown'))
             if state!='idle':
-                check(not self._terminal);return
+                check(not self._terminal)
+                self._emit({'type':'native_status','state':state});return
             reason=update.get('stopReason')
             check(type(reason) is str)
             if self._terminal:
@@ -232,6 +264,8 @@ class SessionReducer:
                 self.outcome='failed'
             elif reason in ('end_turn','refusal') and not self._error_seen and ''.join(self._messages.values()).strip():self.outcome='succeeded'
             else:self._fail('UNCONFIRMED_TERMINAL')
+            if not self.fault:
+                self._emit({'type':'native_status','state':state,'stop_reason':reason})
         # Tool/reasoning/usage/config events are never converted to remote tool calls
         # or invented usage. They remain outside this minimal text observation.
 
