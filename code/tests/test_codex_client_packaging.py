@@ -67,6 +67,16 @@ class CodexLauncherTests(unittest.TestCase):
         item.start()
         self.addCleanup(item.stop)
 
+    def test_codex_default_and_explicit_start_use_existing_cli_wizard(self):
+        seen = []
+        def entry(root, args, **kwargs):
+            seen.append((root, args, kwargs)); return 0
+        with patch.dict(sys.modules, {'quick_start': types.SimpleNamespace(main=entry)}):
+            self.assertEqual(client.main([]), 0)
+            self.assertEqual(client.main(['start', '--config', 'C:/original.json']), 0)
+        self.assertEqual(seen, [(self.root, [], {'harness': 'codex'}),
+            (self.root, ['--config', 'C:/original.json'], {'harness': 'codex'})])
+
     def test_package_defaults_login_to_codex(self):
         seen = []
         with patch.dict(sys.modules, {'codex_login': types.SimpleNamespace(main=lambda a: seen.append(a) or 0)}):

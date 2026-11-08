@@ -51,7 +51,7 @@ class QuickStartReviewTests(unittest.TestCase):
             self.assertNotIn(config.node_token_env, os.environ)
         runtime.assert_not_called()
 
-    def test_codex_default_help_never_enters_workbuddy_setup(self):
+    def test_codex_default_starts_codex_and_explicit_help_has_no_start(self):
         import importlib.util
         location = Path(__file__).resolve().parents[1] / 'packaging' / 'client.py'
         spec = importlib.util.spec_from_file_location('review_client', location)
@@ -62,11 +62,14 @@ class QuickStartReviewTests(unittest.TestCase):
             root = Path(folder)
             (root / 'CLIENT-MANIFEST.json').write_text(json.dumps({'kind': 'native-harness-windows-codex-client'}))
             with patch.object(client, '__file__', str(root / 'client.py')), \
-                 patch.object(quick, 'main') as start, contextlib.redirect_stdout(io.StringIO()), \
-                 self.assertRaises(SystemExit) as result:
-                client.main([])
-            self.assertEqual(result.exception.code, 0)
-            start.assert_not_called()
+                 patch.object(quick, 'main', return_value=0) as start:
+                self.assertEqual(client.main([]), 0)
+                start.assert_called_once_with(root, [], harness='codex')
+                start.reset_mock()
+                with contextlib.redirect_stdout(io.StringIO()), self.assertRaises(SystemExit) as result:
+                    client.main(['--help'])
+                self.assertEqual(result.exception.code, 0)
+                start.assert_not_called()
 
     def test_bad_arguments_never_echo_input_values(self):
         output = io.StringIO()

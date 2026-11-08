@@ -15,7 +15,7 @@ from public_harness_catalog_assets import tree_digest, regular, member_parts, va
 from build import runtime_files, read_regular, digest
 from codex_assets import verify_assets as verify_codex_assets, TREE as CODEX_TREE
 
-CODEX_TOOLS = ('codex_assets.py', 'codex_profile.py', 'codex_control_protocol.py', 'codex_login.py')
+CODEX_TOOLS = ('codex_assets.py', 'codex_profile.py', 'codex_control_protocol.py', 'codex_login.py', 'codex_user_cli.py')
 CODEX_KIND = 'native-harness-windows-codex-client'
 CODEX_EXE_SIZE = 280844080
 

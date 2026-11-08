@@ -1,6 +1,7 @@
 """IO-free fixed Codex App Server protocol; no credentials, processes or retries."""
 import hashlib
 import json
+import ntpath
 import time
 from .beta15_session import decode_frame
 from .contracts import MAX_RESULT_BYTES
@@ -15,9 +16,16 @@ def account_identity_digest(account):
     return hashlib.sha256(json.dumps(identity, sort_keys=True, separators=(',', ':'), ensure_ascii=True).encode()).hexdigest()
 
 
+def check_codex_home(actual, expected):
+    if expected is not None and (not isinstance(actual, str) or
+            ntpath.normcase(ntpath.normpath(actual)) != ntpath.normcase(ntpath.normpath(expected))):
+        raise ValueError('codex_home_mismatch')
+
+
 class CodexSession:
-    def __init__(self, *, deadline, expected_account_digest, on_event=None, clock=time.monotonic):
+    def __init__(self, *, deadline, expected_account_digest, on_event=None, clock=time.monotonic, expected_codex_home=None):
         self.deadline, self.clock = deadline, clock
+        self.expected_codex_home = expected_codex_home
         self.expected_account_digest, self.on_event = expected_account_digest, on_event
         self.phase = 'new'
         self.thread_id = self.turn_id = self.model = None
@@ -203,6 +211,7 @@ class CodexSession:
             if method == 'initialize':
                 if not isinstance(r, dict) or not all(isinstance(r.get(k), str) for k in ('userAgent', 'codexHome', 'platformFamily', 'platformOs')):
                     raise ValueError('initialize_invalid')
+                check_codex_home(r['codexHome'], self.expected_codex_home)
                 self.protocol_ready = True
                 self.phase = 'account_checking'
                 return (self._frame({'method': 'initialized'}), self._request('account/read', {'refreshToken': False}))

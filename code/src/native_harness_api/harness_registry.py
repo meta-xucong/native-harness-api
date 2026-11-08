@@ -21,7 +21,12 @@ WORKBUDDY_ASSETS = {
 }
 CODEX_ASSETS = {'archive_sha256': '16f99769bd4accc519cf22079645db445907182c8b96bc626f496b7390f5ad46',
                 'archive_bytes': 164336310}
+USER_CLI_CONTRACT = {'version': '0.167.0', 'protocol': 'app-server-v2', 'entry': 'codex app-server'}
 ADAPTERS = MappingProxyType({
+    'codex.user-cli.v1': MappingProxyType({
+        'platform': 'windows-x64', 'product_version': 'rust-v0.167.0',
+        'protocol_version': 'app-server-v2', 'asset_identity': digest(USER_CLI_CONTRACT),
+        'policy_id': 'codex-read-only-on-request-v1'}),
     'workbuddy.public-sfe.v1': MappingProxyType({
         'platform': 'windows-x64', 'product_version': '5.9.3',
         'protocol_version': 'public-harness-0.2.0-beta.16', 'asset_identity': digest(WORKBUDDY_ASSETS),
@@ -46,16 +51,17 @@ def profile_path(value):
 
 
 def make_recipe(*, adapter_id, profile_path: str, profile_id, account_fingerprint,
-                native_model, public_alias):
+                native_model, public_alias, **local_cli):
     if adapter_id not in ADAPTERS:
         raise ValueError('Unsupported native adapter')
     return normalize_recipe(dict(recipe_version=1, adapter_id=adapter_id,
         **ADAPTERS[adapter_id], profile_path=profile_path, profile_id=profile_id,
-        account_fingerprint=account_fingerprint, native_model=native_model, public_alias=public_alias))
+        account_fingerprint=account_fingerprint, native_model=native_model, public_alias=public_alias, **local_cli))
 
 
 def normalize_recipe(value):
-    if type(value) is not dict or set(value) != RECIPE_FIELDS:
+    extra = {'cli_path', 'cli_sha256', 'codex_home'} if isinstance(value, dict) and value.get('adapter_id') == 'codex.user-cli.v1' else set()
+    if type(value) is not dict or set(value) != RECIPE_FIELDS | extra:
         raise ValueError('Exact execution recipe required')
     recipe = dict(value)
     adapter = ADAPTERS.get(recipe['adapter_id'])
@@ -63,6 +69,12 @@ def normalize_recipe(value):
             or any(recipe[k] != v for k, v in adapter.items())):
         raise ValueError('Pinned adapter recipe required')
     recipe['profile_path'] = profile_path(recipe['profile_path'])
+    if extra:
+        for key in ('cli_path', 'codex_home'):
+            recipe[key] = profile_path(recipe[key])
+        if (ntpath.basename(recipe['cli_path']) != 'codex.exe' or
+                not isinstance(recipe['cli_sha256'], str) or not re.fullmatch('[0-9a-f]{64}', recipe['cli_sha256'])):
+            raise ValueError('Frozen user CLI identity required')
     identifier(recipe['profile_id'])
     if not isinstance(recipe['account_fingerprint'], str) or not re.fullmatch('[0-9a-f]{64}', recipe['account_fingerprint']):
         raise ValueError('Confirmed public account fingerprint required')

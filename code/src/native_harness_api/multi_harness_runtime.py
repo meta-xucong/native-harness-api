@@ -69,7 +69,7 @@ class MultiHarnessConfig(RuntimeConfig):
                 expected_profile_id=recipe['profile_id'],
                 expected_account_fingerprint=recipe['account_fingerprint'])
             return native.invoke, project_result
-        if recipe['adapter_id'] == 'codex.app-server.v1':
+        if recipe['adapter_id'] in ('codex.app-server.v1', 'codex.user-cli.v1'):
             from .codex_trial_runtime import invoke
             from .codex_session import project_result
             return partial(invoke, target, execution_timeout=self.execution_timeout,

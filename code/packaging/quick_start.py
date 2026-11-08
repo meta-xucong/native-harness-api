@@ -1,4 +1,4 @@
-"""Thin, user-run WorkBuddy setup/start. No GUI credential access or inference probe."""
+"""Thin, user-run WorkBuddy / existing Codex CLI setup/start. No GUI credential access or inference probe."""
 import argparse
 import getpass
 import json
@@ -106,10 +106,96 @@ def discover_target(root, profile_path):
 
 
 def setup(root):
-    from prepare_native_deployment import build_plan, write_plan
     print('同账号独立官方登录，不复用 GUI 会话；登录保留多久由官方决定。')
     profile = choose_profile(root)
     target = discover_target(root, profile)
+    return write_connection(root, profile, target)
+
+
+def choose_codex_model(choices):
+    if not choices:
+        raise SetupError('官方目录未提供可选模型；没有生成配置。')
+    defaults = [number for number, model in enumerate(choices, 1) if model.get('isDefault') is True]
+    default = defaults[0] if len(defaults) == 1 else None
+    for number, model in enumerate(choices, 1):
+        marker = '（默认）' if number == default else ''
+        print(f"{number}. {ascii(model['model'])}  {ascii(model.get('displayName'))} {marker}")
+    choice = input('选择模型编号' + (f'（回车 {default}）' if default else '') + '：').strip()
+    number = default if not choice and default else int(choice)
+    if not 1 <= number <= len(choices):
+        raise SetupError('未选择有效模型。')
+    return choices[number - 1]['model']
+
+
+def setup_codex(root):
+    import codex_user_cli as cli
+    print('复用当前用户已有官方 Codex CLI 与 CODEX_HOME，不复制凭据、不重新登录、不发送测试 prompt。')
+    print('已有配置、MCP、skills 和企业策略仍可能生效；官方程序可能刷新自身认证。')
+    print('官方 App Server 认证不允许用于商业或托管服务；本机连接成功不等于获准向 404token 转供。')
+    parent = root / 'profiles'
+    supplied = input('已有本工具 Codex sidecar 路径（不是 CODEX_HOME；回车自动选择）：').strip().strip('"')
+    candidates = [Path(supplied).resolve()] if supplied else sorted(parent.glob(cli.PREFIX + '*'))
+    if len(candidates) > 1:
+        for number, candidate in enumerate(candidates, 1):
+            print(f'{number}. {candidate.name}')
+        number = int(input('选择保留的 Codex sidecar 编号：'))
+        if not 1 <= number <= len(candidates):
+            raise SetupError('未选择有效 sidecar。')
+        candidates = [candidates[number - 1]]
+    profile = None
+    try:
+        if candidates:
+            profile = cli.open_profile(candidates[0])
+            if profile.state not in ('fresh', 'authenticated_confirmed'):
+                raise SetupError('保留的 Codex 连接尚未确认。请检查原状态，不会重建或自动登录。')
+            if any((profile.root / 'control' / name).exists() for name in ('journal', 'native-evidence')):
+                raise SetupError('此 sidecar 已有任务记录。请选择原 windows-node.json 恢复。')
+            context = cli.read_context(profile)
+        else:
+            executable = input('官方 codex.exe 路径（回车使用 PATH 中已有安装）：').strip().strip('"')
+            context = cli.resolve_cli(executable or None)
+        print('实际 CLI：' + context['cli_path'])
+        print('原 CODEX_HOME：' + context['codex_home'])
+        if input('确认这是你要使用的官方 CLI 和原登录环境？输入 yes：').strip().lower() != 'yes':
+            raise SetupError('已取消；未启动 Codex。')
+        cli.verify_version(context)
+        if profile is None:
+            parent.mkdir(exist_ok=True)
+            profile = cli.create_profile(parent, context)
+        confirmed = profile.state == 'authenticated_confirmed'
+        result = cli.discover(profile, context)
+        account = result['account']
+        print('账号：' + ascii(account.get('email')))
+        print('工作区：' + ascii(account.get('workspaceName')))
+        if not confirmed:
+            if input('确认这是你要使用的账号？输入 yes：').strip().lower() != 'yes':
+                raise SetupError('账号未确认；sidecar 保留，没有生成配置。')
+            cli.confirm_profile(profile, account)
+        native_model = choose_codex_model(result['models'])
+        alias = input('API 模型别名（回车 codex-local）：').strip() or 'codex-local'
+        target = cli.export_target(profile, context, result['models'], native_model, alias)
+        return write_connection(root, profile.root, target)
+    except ValueError as error:
+        messages = {
+            'CODEX_CLI_NOT_FOUND': '没有找到已有 Codex CLI。请选择已安装的官方 codex.exe；不会自动下载。',
+            'SELECT_OFFICIAL_CODEX_EXE': '未能定位 npm 安装的原生入口。请明确选择已有官方 codex.exe，不执行未知脚本。',
+            'EXISTING_CODEX_HOME_REQUIRED': '没有找到当前用户原 CODEX_HOME；请在原 Codex 登录环境运行，不会创建空登录目录。',
+            'CODEX_HOME_NOT_FOUND': '无法确定原 CODEX_HOME。请使用原 Codex 登录环境。',
+            'CODEX_VERSION_UNSUPPORTED': '当前 CLI 版本未受此适配器支持（需要 0.167.0）；没有换包、降级或生成配置。',
+            'CODEX_CONTEXT_CHANGED': '所选 CLI 或登录环境已经变化；没有替换原任务或生成配置。',
+            'CODEX_CONNECTION_NOT_VERIFIED': '账号、目录或连接未确认。请保留 sidecar，并在同用户、同 CODEX_HOME 下用官方 codex login status 排查；未登录时由你完成官方登录。没有自动重试或生成配置。',
+        }
+        if str(error) in messages:
+            raise SetupError(messages[str(error)]) from None
+        raise
+    finally:
+        if profile is not None:
+            cli.close_profile(profile)
+        cli.hold_retained()
+
+
+def write_connection(root, profile, target):
+    from prepare_native_deployment import build_plan, write_plan
     spec = {'schema_version': 2, 'windows_data_dir': str(profile / 'control'), 'targets': [target],
         'bridge_origin': input('Bridge HTTPS 地址：').strip(),
         'user_id': int(input('Sub2API 用户数字 ID：')),
@@ -143,16 +229,18 @@ def start_node(path, config):
             os.environ.pop(name, None)
 
 
-def main(root, argv=None):
+def main(root, argv=None, *, harness='workbuddy'):
     # Windows redirected stdio may default to cp1252, unlike the UTF-8 console.
     for stream in (sys.stdout, sys.stderr):
         if hasattr(stream, 'reconfigure'):
             stream.reconfigure(encoding='utf-8')
-    parser = Parser(description='WorkBuddy 首次设置 / 使用原配置启动。不会自行发送模型请求。')
+    parser = Parser(description='首次设置 WorkBuddy / 已有 Codex CLI，或使用原配置启动。不会自行发送模型请求。')
     parser.add_argument('--config', type=Path, help='明确选择已有 windows-node.json，保留原身份及任务记录')
     args = parser.parse_args(argv)
     root = Path(root).resolve()
     try:
+        if harness not in ('workbuddy', 'codex'):
+            raise SetupError('未知客户端类型。')
         console_required()
         if args.config is not None:
             path = args.config.resolve()
@@ -168,7 +256,7 @@ def main(root, argv=None):
             print('已有部署必须选择原 Node 配置，不能用新部署替代旧任务或旧 data_dir。')
             supplied = input('已有 windows-node.json 的完整路径（只有全新部署才回车）：').strip().strip('"')
             if not supplied:
-                return setup(root)
+                return setup_codex(root) if harness == 'codex' else setup(root)
             path = Path(supplied).resolve()
         config = load_node(path)
         remember(root, path)

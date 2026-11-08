@@ -2,15 +2,16 @@
 import json
 import time
 from native_harness_api.beta15_session import decode_frame
-from native_harness_api.codex_session import account_identity_digest
+from native_harness_api.codex_session import account_identity_digest, check_codex_home
 
 
 class CodexControlProtocol:
     def __init__(self, *, deadline, expected_account_digest, on_event=None,
-                 mode='models', on_device=None, clock=time.monotonic):
-        if mode not in ('login', 'models'):
+                 mode='models', on_device=None, clock=time.monotonic, expected_codex_home=None):
+        if mode not in ('login', 'models', 'connect'):
             raise ValueError('CONTROL_MODE')
         self.mode, self.deadline, self.clock = mode, deadline, clock
+        self.expected_codex_home = expected_codex_home
         self.expected_account_digest, self.on_device = expected_account_digest, on_device
         self.phase = 'new'
         self.fault = self.outcome = None
@@ -91,6 +92,7 @@ class CodexControlProtocol:
             if method == 'initialize':
                 if not isinstance(result, dict) or not all(isinstance(result.get(k), str) for k in ('userAgent', 'codexHome', 'platformFamily', 'platformOs')):
                     raise ValueError('initialize_invalid')
+                check_codex_home(result['codexHome'], self.expected_codex_home)
                 self.phase = 'reading_account'
                 return (self._frame({'method': 'initialized'}), self._request('account/read', {'refreshToken': False}))
             if method == 'account/read':

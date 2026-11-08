@@ -1,5 +1,7 @@
 # 开发代理与协作者约束
 
+当前增量先读 `blueprint/EXISTING-CLI-ADDENDUM.md` 及其独立审计。Codex 默认改为已有官方 CLI / 同用户同 CODEX_HOME；本工具不读取复制凭据，旧 managed adapter 与 WorkBuddy 已接受任务恢复必须保留。仅 Native 最小适配，Bridge/Sub2API 不改；不运行真实账号/模型，不部署/合并，不声称商业转供获准。
+
 本分支当前为 P1b 接缝开发，真实 Bridge HTTP 可测试，Sub2API PostgreSQL 完整闭环未验收，模型执行仍仅 synthetic。先读 README、blueprint/BLUEPRINT-v0.2.md、blueprint/P1B-ADDENDUM.md、blueprint/DESIGN-AUDIT-v0.2.md、code/README.md、code/docs/HTTP_CONTRACT.md 和 code/docs/IMPLEMENTATION_STATUS.md。docs/ 与 audit/ 是 v0.1 历史快照，不覆盖审定 v0.2。代码与蓝图必须分放 code/、blueprint/。
 
 P2 独立本机试验工具另见 blueprint/P2-LOCAL-TRIAL-ADDENDUM.md 和 code/docs/WORKBUDDY_LOCAL_TRIAL.md。仅允许本机用户显式选择官方 WorkBuddy bundle、模型回读和一次 prompt；不放开 P1b synthetic 网络渠道，不读取厂商凭据，不自动推理/重试/永久审批。云端开发只跑离线协议 fixture，真实账号运行由本机用户明确确认。打包保持固定官方 Python SHA/许可和精确源码 revision，不能用可下载包本身冒称真实 WorkBuddy 已通过。

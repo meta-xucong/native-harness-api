@@ -4,13 +4,14 @@
 
 目标是把用户本机官方 Harness 的真实执行与文本输出接入 404token / Sub2API。蓝图与实现分别保存在 `blueprint/`、`code/`；当前仍在 draft PR 开发审计，不自动部署服务器，也不替用户登录。
 
+- [本次已有 CLI 优先增量](blueprint/EXISTING-CLI-ADDENDUM.md) 与 [增量设计审计](blueprint/EXISTING-CLI-DESIGN-AUDIT.md)。
 - [已独审定稿的开发文档](blueprint/DEVELOPMENT-v0.3-MULTI-HARNESS.md) 与 [设计审计](blueprint/DEVELOPMENT-AUDIT-v0.3.md)。
 - [通用配置与旧任务恢复](code/docs/MULTI-HARNESS-CONFIG.md)：单 Node、单执行槽、一个账本；旧任务不会换 Harness 重跑。
 - WorkBuddy：新增双击 `Client.cmd` 的薄启动向导，复用登录/profile/目录/配置；已有部署直接沿用原 Node 配置恢复。见 [最简设计](blueprint/SIMPLE-LAUNCHER.md)。保留已实现的 public SFE 运行链、受控 profile、模型发现和流式文本。
-- Codex：新增固定版本官方 App Server、用户本地 ChatGPT device-code 登录、模型发现、文本流及终态清理。源码/自编协议测试不等于真实账号模型验收。
+- Codex：默认优先用户已有官方 CLI，复用同一 Windows 用户、同一 `CODEX_HOME` 下由官方程序管理的登录；不读取或复制凭据。保留旧独立 managed profile 的显式命令与任务恢复。见 [Codex 使用说明](code/packaging/CODEX-CLIENT-README.zh-CN.md)。源码/自编协议测试不等于真实账号模型验收。
 - 豆包工作、千问办公：尚未实现 Adapter，不列入可用模型。
 
-**真实账户验收仍由用户在本机完成。** Codex 当前只投影回答文本，commentary 显示任务运行状态而不转发原文，不是完整 Codex UI 镜像。工具审批不会自动放行；不回传凭据，不把模拟输出或心跳拼成模型答案。实际运行官方客户端本身并不能保证转供服务符合厂商条款，应单独核对账号和服务授权。
+**真实账户验收仍由用户在本机完成。** Codex 当前只投影回答文本，commentary 显示任务运行状态而不转发原文，不是完整 Codex UI 镜像。工具审批不会自动放行；不回传凭据，不把模拟输出或心跳拼成模型答案。官方 App Server 认证文档明确不允许将该认证用于商业或托管服务；本机复用登录、开源许可与技术可调用都不表示404token商业转供获准。本轮不部署或启用商业服务。
 
 以下 v0.2 / P1 文档为历史阶段记录，不替代 v0.3 当前支持范围：
 

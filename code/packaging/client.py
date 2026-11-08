@@ -25,14 +25,13 @@ def main(argv=None):
             parser.error('Harness not included in this package')
         argv = argv[2:]
     if not argv:
-        argv = ['start'] if harness == 'workbuddy' else ['--help']
+        argv = ['start']
     args = parser.parse_args(argv[:1])
     remaining = argv[1:]
     if args.command == 'start':
-        if harness != 'workbuddy': parser.error('Quick start currently supports the WorkBuddy package only')
         sys.path.insert(0, str(root))
         from quick_start import main as entry
-        return entry(root, remaining)
+        return entry(root, remaining, harness='codex') if harness == 'codex' else entry(root, remaining)
     if args.command in ('login', 'models'):
         login_parser = Parser(prog='Client '+args.command, allow_abbrev=False)
         profile_flag = '--profile-parent' if args.command == 'login' else ('--profile-root' if harness == 'codex' else '--profile')
