@@ -300,3 +300,34 @@ source CI is separate. This document records the intended revision, not a run
 result. Even success would establish only this pinned CN Product projection and
 public readiness with no account, not GUI account reuse, installed 5.8.4 or INTL
 compatibility, entitlement, model success, or an enabled real-use API channel.
+
+### Revision 5 actual result: public WorkBuddy Product readiness established
+
+Reviewed commit `25191a745acaf0187b88b0c0e3bef5d6f138940d` completed one
+[hosted Product-only experiment](https://github.com/meta-xucong/native-harness-api/actions/runs/42433908802),
+push event / attempt 1. Its Windows prerequisite passed 44 synthetic Node
+scenarios and 418 Python tests with 4 reported skips. All four actual Windows
+library lifecycle cases passed. Both ordinary push/PR CI runs also succeeded.
+
+The downloaded schema-4 artifact reports all five new Product evidence booleans
+true, along with entry/import, handshake and close/settlement checks. The child
+validated the ready managed public snapshot's WorkBuddy name/application and
+version 5.9.3; raw Product content was not exported. No auth methods were
+advertised, as expected for external account mode. No elicitation was observed.
+Protocol version was 1, failure stage/error buckets were 0, and elapsed time
+including setup/cleanup was 3983 ms. Stdin/stdout/stderr counters were all 0.
+Natural exit code 0, naturally empty Job, host/job/handle/IO cleanup all passed.
+
+Artifact `13598447945`: ZIP 531 bytes, SHA256
+`02110ff294f0d63ab2aa99e404ce1d4c86f90a6e4d3755d24d30457c9278438c`.
+Its sole member `library-product-sanitized-summary.json` is 867 bytes, SHA256
+`3a251ba6306e5fc5707d92374f690cdddba57a2bfedae8f1da6c275952fb5f59`.
+
+This confirms the pinned real native library accepts the complete official CN
+WorkBuddy Product and provides public anonymous Product readiness with external
+account mode. It does not establish a managed auth catalog, account restoration,
+login, GUI credential/protection reuse, model routing/entitlement/completion,
+installed 5.8.4 or international compatibility, or zero implicit side effects.
+No local-PC action, account/model call, merge or deployment occurred. Overall
+remains NOT_READY_FOR_DIRECT_REAL_USE until the separate account/model/API gates
+are actually verified.
