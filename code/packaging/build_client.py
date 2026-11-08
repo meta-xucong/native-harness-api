@@ -33,7 +33,8 @@ def sources(code, revision):
     selected = [(p, p[len('code/'):]) for p in tracked if p.endswith('.py') and '/__pycache__/' not in p]
     selected += [('code/tools/'+n,'tools/'+n) for n in TOOLS]
     selected += [('code/packaging/'+n,n) for n in PACKAGING]
-    selected += [('code/docs/DEPLOYMENT_CHAIN.zh-CN.md','DEPLOYMENT_CHAIN.zh-CN.md')]
+    selected += [('code/docs/DEPLOYMENT_CHAIN.zh-CN.md','DEPLOYMENT_CHAIN.zh-CN.md'),
+                 ('code/docs/NATIVE_EVENT_STREAM.md','NATIVE_EVENT_STREAM.md')]
     required = ['code/packaging/build_client.py','code/packaging/build.py']
     for path in [p for p,_ in selected]+required:
         if read_regular(root/path) != git('show',revision+':'+path):

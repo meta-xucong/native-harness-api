@@ -91,7 +91,7 @@ Client.cmd preflight --config C:\path\windows-node.json
 
 Facade 的有限等待可能先返回 504。此时不能生成新 key、换模型或换 body；稍后仅重发**同 key、同 body**获取相同操作的状态/结果。相同请求不会换路由重跑。未知进程或 cleanup 情况需要保留 owner 进程与全部账本，不能删除 profile、清库或新建任务伪装重试。
 
-当前是单 owner、单槽、非收费、单 user 文本模式；专用路径仍非流式，标准路径可选下述终态缓冲SSE；下游工具 schema、tool-role 和需要原生交互审批的请求不支持。目录/账号隔离不是多租户安全沙箱，官方程序可能运行不需要额外审批的原生工具。完成这些软件配置不证明商业转供许可或生产服务已验收。
+当前是单 owner、单槽、非收费、单 user 文本模式；专用路径仍非流式，标准路径可选下述实时原生事件SSE；下游工具 schema、tool-role 和需要原生交互审批的请求不支持。目录/账号隔离不是多租户安全沙箱，官方程序可能运行不需要额外审批的原生工具。完成这些软件配置不证明商业转供许可或生产服务已验收。
 
 ## 多模型共用一台电脑和一个账号
 
@@ -107,6 +107,10 @@ Facade 的有限等待可能先返回 504。此时不能生成新 key、换模�
 
 `standard_wait_seconds` 默认为180秒，允许0–300；0表示不追加观察。仅明确504 `TASK_WAIT_TIMEOUT` 后，在同一请求预算内以只读方式观察同一冻结任务，不创建新任务或跨provider重试。客户端断连只停止观察，不代表原生任务取消。客户端及Sub2API前置反代超时必须覆盖配置等待预算与网络余量（180秒配置建议至少240秒），应由部署管理员验证实际每一跳。
 
-标准路径 `stream:true` 仅为 **buffered-final SSE**：已验证终态后一次发送完整内容delta、结束帧和[DONE]，响应标记 `X-Native-Stream-Mode: buffered-final`。不是实时token流，完成前无成功事件/heartbeat；超时或错误仍为JSON错误，无[DONE]。不支持stream_options，usage未知不伪造。专用native-harness路径仍拒绝stream:true。
+标准路径 `stream:true` 现在为 **native-events-v1 named SSE**，不再等终态才输出。响应 `X-Native-Stream-Mode: native-events-v1`；每条持久事件使用Bridge seq作为id，立即flush。`text_snapshot {text}`是权威完整文本快照，必须替换此前文本，可缩短、更正或清空；不是append token delta。`native_status`/`task_status`反映原生与账本状态，idle/end_turn不单独证明完成。只有验证后的 `completion`（完整最终答案）或 `task_error` 是结果终态。不能交给只识别OpenAI choices.delta的客户端，也不伪造usage。
+
+收到并应用事件后保存id。断线后保持同Key、同正文、同Idempotency-Key，并携带 `Last-Event-ID` 只读恢复；丢游标使用0。重复收到同id应去重；不能将EOF视为成功。无id的 `observation_error` 仅表示观察中断、未取消任务；`observation_end`说明已读到持久终态游标，不重复最终答案。原生日志不是全部原样公开，模型正文也不保证自动脱敏。完整合同见Windows包内 `NATIVE_EVENT_STREAM.md` 或源码同名文档。
+
+流模式 `standard_wait_seconds` 须1–300，默认180；预算或单次写入超时只中断观察，不取消/重派原生工作。前置代理必须禁用响应缓冲/缓存/上游重试，允许SSE并合理配置read timeout；`: observing`仅为连接保活注释，不证明WorkBuddy仍在生成。专用native-harness非流式接口仍不接受stream:true，stream_options尚不支持。
 
 排空必须设置 `accepting_new:false`，同时保留 `standard_api:true` 和原专用Key/owner，直到已受理和unknown任务恢复结束。不能通过关闭standard_api或更换allowlisted Key来排空，否则会撤销标准路径保留、使旧请求进入普通路由；确需撤销先禁用该Key，禁止将它重用于普通provider。两种路径共用操作身份，恢复始终使用同Key/同正文/同Idempotency-Key。完整合同见配套Sub2API源码 `docs/native-harness/STANDARD_API_OPT_IN.md`。

@@ -18,8 +18,9 @@ Node 只发布经官方 prompt ACK 归属核验后的 root 消息投影：
   `task_terminal`。只有终态事件经 Facade 重新读取、验证同任务的原生完成证据，
   才投影为 `completion`（完整受限 Chat Completion）或 `task_error {code,status}`。
 
-所有事件的 seq 来自 Bridge 持久日志，按任务连续递增。工具、凭据、路径、任意
-原始日志和他人消息不透传；工具执行不会伪造成客户端待执行 tool_calls。
+所有事件的 seq 来自 Bridge 持久日志，按任务连续递增。原始工具/凭据/路径字段、任意
+vendor对象及非本任务消息不直接透传；模型输出正文不保证自动脱敏，仍可能包含用户
+输入或模型生成的敏感内容。工具执行不会伪造成客户端待执行 tool_calls。
 
 ## 内部分页与身份
 

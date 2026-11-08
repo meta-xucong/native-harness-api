@@ -9,6 +9,7 @@ on:
       - 'code/tools/public_harness_models.py'
       - 'code/tools/public_harness_preflight.py'
       - 'code/docs/DEPLOYMENT_CHAIN.zh-CN.md'
+      - 'code/docs/NATIVE_EVENT_STREAM.md'
       - 'code/tools/public_harness_runtime_assets.py'
       - 'code/packaging/build_client.py'
       - 'code/packaging/build_server.py'

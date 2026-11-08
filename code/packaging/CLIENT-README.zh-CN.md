@@ -12,7 +12,7 @@
 
 `client-config.example.json` 是字段说明，不是已经匹配服务端的可用配置；owner 必须形如 `user-7` / `key-9`，不能填裸数字或 API-key 字符串。
 
-真实渠道还需要相匹配的 Bridge 与 Sub2API 实现和配置，不能仅把 ZIP 当作已部署的 404token 服务。当前只提供单可信用户、单槽、单 user 文本、专用路径非流式、标准路径可选终态缓冲SSE、非收费试验，不支持多租户安全隔离，也不保证厂商商业转供许可。需要人工审批的原生工具请求会被拒绝，不自动全权批准。
+真实渠道还需要相匹配的 Bridge 与 Sub2API 实现和配置，不能仅把 ZIP 当作已部署的 404token 服务。当前只提供单可信用户、单槽、单 user 文本、专用路径非流式、标准路径可选实时原生事件SSE、非收费试验，不支持多租户安全隔离，也不保证厂商商业转供许可。需要人工审批的原生工具请求会被拒绝，不自动全权批准。
 
 取消、超时、登录不明、进程清理不明或已有未决 journal 时，不要删目录、重建操作或自动重试。保留现场，只恢复同一任务的已有证据。模型用量未知时不伪造 token 数。
 
@@ -22,4 +22,4 @@
 
 完整保留官方 SFE 包的 `assets/sfe/package/LICENSE`（Tencent CodeBuddy MIT）、Node 发行包中的 `LICENSE` 及全部随包文件、Python 的 `runtime/LICENSE.txt`。软件分发许可不等于账号配额可向第三方商业转供；服务条款和账号授权需单独遵守。
 
-标准 `/v1` 接入需服务端显式开启 `standard_api`，仍要求稳定Idempotency-Key；不是完整通用provider。`stream:true`只在终态输出缓冲SSE，不是实时token流。180秒有界等待、客户端/代理超时和排空约束见本包部署说明。
+标准 `/v1` 接入需服务端显式开启 `standard_api`，仍要求稳定Idempotency-Key；不是完整通用provider。`stream:true`现在使用 `native-events-v1`：及时输出原生文本快照及任务状态，不是仅终态缓冲，也不是OpenAI choices.delta token流。`text_snapshot`须覆盖全部文本（可缩短/更正），仅 `completion`/`task_error` 表示结果终态；idle、EOF和断线均不代表完成。同Key/正文/Idempotency-Key配合Last-Event-ID恢复，丢游标用0，绝不换键重生。完整事件协议见本包 `NATIVE_EVENT_STREAM.md`，180秒观察预算、代理禁缓冲和排空约束见部署说明。
