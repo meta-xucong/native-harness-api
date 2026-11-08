@@ -4,24 +4,27 @@ import * as fs from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
-import { runHandshake as actualHandshake, complete, classifyError, classifyDetail, verifyPhysicalFile, verifyVirtualFile } from '../../tools/workbuddy_library_driver.mjs';
+import { runHandshake as actualHandshake, complete, classifyError, classifyDetail, verifyPhysicalFile, verifyVirtualFile, loadPhysicalProduct } from '../../tools/workbuddy_library_driver.mjs';
 
-const runHandshake = (load, options = {}, clock) => actualHandshake(load, { verifyEntry: async () => {}, ...options }, clock);
+const productConfig = { schemaVersion: 1, kind: 'overlay', configuration: { productName: 'WorkBuddy' } };
+const productSnapshot = { state: 'ready', mode: 'managed', productName: 'WorkBuddy', applicationName: 'WorkBuddy', productVersion: '5.9.3' };
+const productApi = () => ({ read: async () => ({ ...productSnapshot }) });
+const runHandshake = (load, options = {}, clock) => actualHandshake(load, { verifyEntry: async () => {}, loadProduct: async () => structuredClone(productConfig), ...options }, clock);
 
 function fixture(fail = '') {
   const calls = [];
   const closed = fail === 'settle' ? Promise.reject(new Error('PRIVATE_SECRET')) : Promise.resolve();
   closed.catch(() => {});
   const harness = { closed, async close() { calls.push('harness.close'); if (fail === 'harness.close') throw Error('PRIVATE_SECRET'); } };
-  const client = { on(method, handler) { calls.push('on'); assert.equal(method, 'elicitation/create'); assert.equal(typeof handler, 'function'); }, initialization: { protocolVersion: fail === 'protocol' ? 2 : 1 },
+  const client = { product: { read: async params => { calls.push('product.read'); assert.deepEqual(params, {}); if (fail === 'product.read') throw Error('PRIVATE_SECRET'); return {...productSnapshot, ...(fail === 'product.identity' ? {productName:'CodeBuddy'} : {})}; } }, on(method, handler) { calls.push('on'); assert.equal(method, 'elicitation/create'); assert.equal(typeof handler, 'function'); }, initialization: { protocolVersion: fail === 'protocol' ? 2 : 1 },
     async connect(h, options) { calls.push('connect'); assert.equal(h, harness); assert.ok(options.timeoutMs > 0);
       if (fail === 'connect') throw Error('PRIVATE_SECRET'); if (fail === 'deadline') return new Promise(() => {}); },
     async close() { calls.push('client.close'); if (fail === 'client.close') throw Error('PRIVATE_SECRET'); if (fail === 'close.deadline') return new Promise(() => {}); } };
   const api = {
     async createHarness(options) { calls.push('createHarness'); assert.equal(options.configDir, '/synthetic');
-      assert.equal(options.strictMcpConfig, true); assert.ok(options.signal instanceof AbortSignal);
+      assert.deepEqual(options.productConfig, productConfig); assert.equal(options.strictMcpConfig, true); assert.ok(options.signal instanceof AbortSignal);
       if (fail === 'harness') throw Error('PRIVATE_SECRET'); return harness; },
-    createClient(options) { calls.push('createClient'); assert.deepEqual(options, { account: { mode: 'external' }, product: { mode: 'external' }, capabilities: { elicitation: { form: {}, url: {} } } });
+    createClient(options) { calls.push('createClient'); assert.deepEqual(options, { account: { mode: 'external' }, product: { mode: 'managed' }, capabilities: { elicitation: { form: {}, url: {} } } });
       if (fail === 'client') throw Error('PRIVATE_SECRET'); return client; }
   };
   // Only these permitted APIs exist. Any accidental prohibited verb fails the fixture.
@@ -32,24 +35,26 @@ async function test(fail, expectedStage, expectedCalls) {
   const f = fixture(fail);
   const dto = await runHandshake(f.load, { configDir: '/synthetic', timeoutMs: fail === 'deadline' ? 30 : 1000, cleanupMs: fail === 'close.deadline' ? 30 : 1000 });
   assert.equal(dto.failure_stage, expectedStage);
-  assert.equal(dto.connect_returned, ['', 'protocol', 'client.close', 'harness.close', 'settle', 'close.deadline'].includes(fail));
+  assert.equal(dto.connect_returned, ['', 'protocol', 'client.close', 'harness.close', 'settle', 'close.deadline', 'product.read', 'product.identity'].includes(fail));
   assert.equal(complete(dto), expectedStage === 0);
   assert.deepEqual(f.calls, expectedCalls);
   assert.ok(Object.values(dto).every(v => typeof v === 'boolean' || (typeof v === 'number' && Number.isFinite(v))));
   assert.ok(!JSON.stringify(dto).includes('PRIVATE_SECRET'));
   count++;
 }
-const full = ['import','createHarness','createClient','on','connect','client.close','harness.close'];
+const full = ['import','createHarness','createClient','on','connect','product.read','client.close','harness.close'];
 await test('',0,full);
+await test('product.read',8,full);
+await test('product.identity',8,full);
 await test('import',1,['import']);
 await test('harness',2,['import','createHarness']);
 await test('client',3,['import','createHarness','createClient','harness.close']);
-await test('connect',4,full);
-await test('protocol',4,full);
+await test('connect',4,full.filter(x=>x!=='product.read'));
+await test('protocol',4,full.filter(x=>x!=='product.read'));
 await test('client.close',5,full);
 await test('harness.close',6,full);
 await test('settle',6,full);
-await test('deadline',7,full);
+await test('deadline',7,full.filter(x=>x!=='product.read'));
 await test('close.deadline',7,full);
 await assert.rejects(runHandshake(async()=>({}), { timeoutMs:0 })); count++;
 let lateClosed = 0, releaseLate;
@@ -87,7 +92,7 @@ assert.equal(syncClosed, 1); count++;
 let cleanupHarness = 0;
 const exhaustedClose = await runHandshake(async () => ({
   createHarness: async () => ({ closed: Promise.resolve(), close: async () => { cleanupHarness++; } }),
-  createClient: () => ({ on() {}, initialization: { protocolVersion: 1 }, connect: async () => {},
+  createClient: () => ({ on() {}, product: productApi(), initialization: { protocolVersion: 1 }, connect: async () => {},
     close: async () => { tick += 15; } })
 }), { timeoutMs: 1000, cleanupMs: 5 }, clock);
 assert.equal(exhaustedClose.failure_stage, 7);
@@ -101,7 +106,7 @@ let closing = false, closeClockReads = 0, raceClientCloses = 0, raceHarnessClose
 const raceClock = () => !closing ? 0 : (++closeClockReads <= 2 ? 0 : 20);
 const microtaskRace = await runHandshake(async () => ({
   createHarness: async () => ({ closed: Promise.resolve(), close: () => { raceHarnessCloses++; } }),
-  createClient: () => ({ on() {}, initialization: { protocolVersion: 1 }, connect: async () => {},
+  createClient: () => ({ on() {}, product: productApi(), initialization: { protocolVersion: 1 }, connect: async () => {},
     close: () => { raceClientCloses++; closing = true; } })
 }), { timeoutMs: 1000, cleanupMs: 5 }, raceClock);
 assert.equal(microtaskRace.failure_stage, 7);
@@ -117,7 +122,7 @@ const ordered = await runHandshake(() => { verifyCalls.push('import'); return ve
   verifyEntry: async () => { verifyCalls.push('verify'); }
 });
 assert.deepEqual(verifyCalls, ['verify', 'import']);
-assert.equal(ordered.schema_version, 3);
+assert.equal(ordered.schema_version, 4);
 assert.equal(ordered.entry_verified, true);
 assert.equal(ordered.error_class, 0); count++;
 let blockedImport = 0;
@@ -186,7 +191,7 @@ const elicitation = await runHandshake(async () => ({
   createHarness: async ({signal}) => { observedSignal = signal; return { closed: Promise.resolve(), close: async () => {} }; },
   createClient: () => ({
     on(method, handler) { assert.equal(method, 'elicitation/create'); elicitationHandler = handler; },
-    initialization: { protocolVersion: 1 },
+    product: productApi(), initialization: { protocolVersion: 1 },
     connect: async () => {
       assert.equal(typeof elicitationHandler, 'function');
       const hostile = new Proxy({}, { get() { untouchedRequest++; throw Error('PRIVATE_SECRET'); } });
@@ -208,7 +213,7 @@ let lateElicitation;
 const elicitationDuringClose = await runHandshake(async () => ({
   createHarness: async () => ({ closed: Promise.resolve(), close: async () => {} }),
   createClient: () => ({ on(_method, handler) { lateElicitation = handler; },
-    initialization: { protocolVersion: 1 }, connect: async () => {},
+    product: productApi(), initialization: { protocolVersion: 1 }, connect: async () => {},
     close: async () => { assert.deepEqual(lateElicitation(), { action: 'cancel' }); } })
 }));
 assert.equal(elicitationDuringClose.elicitation_seen, 1);
@@ -223,6 +228,37 @@ const verifyExpired = await runHandshake(() => { blockedImport++; }, {
 assert.equal(verifyExpired.failure_stage, 7);
 assert.equal(verifyExpired.entry_verified, false);
 assert.equal(blockedImport, 0); count++;
+
+// Product verification must finish before any vendor import.
+let productImport = 0;
+for (const loadProduct of [async () => { throw Error('PRIVATE_SECRET'); }, async () => null]) {
+  const result = await runHandshake(() => { productImport++; }, { loadProduct });
+  assert.equal(result.failure_stage, 1); assert.equal(result.product_config_verified, false);
+  assert.equal(result.import_ok, false); assert.equal(productImport, 0); count++;
+}
+let productClock = 0;
+const productExpired = await runHandshake(() => { productImport++; }, {
+  timeoutMs: 5, loadProduct: async () => { productClock = 10; return productConfig; }
+}, () => productClock);
+assert.equal(productExpired.failure_stage, 7); assert.equal(productExpired.product_config_verified, false);
+assert.equal(productImport, 0); count++;
+for (const methods of [[], undefined, null, {}, ['PRIVATE_SECRET']]) {
+  let reads = 0;
+  const result = await runHandshake(async () => ({
+    createHarness: async () => ({closed: Promise.resolve(), close: async()=>{}}),
+    createClient: () => ({on(){}, initialization:{protocolVersion:1,authMethods:methods}, connect:async()=>{},close:async()=>{},
+      product:{read:async()=>{reads++;return productSnapshot;}}})
+  }));
+  const allowed = methods === undefined || Array.isArray(methods) && methods.length === 0;
+  assert.equal(result.auth_methods_empty, allowed); assert.equal(result.success, allowed);
+  assert.equal(reads, allowed ? 1 : 0); assert.equal(result.failure_stage, allowed ? 0 : 4); count++;
+}
+const productTimeout = await runHandshake(async () => ({
+  createHarness: async()=>({closed:Promise.resolve(),close:async()=>{}}),
+  createClient: ()=>({on(){},initialization:{protocolVersion:1},connect:async()=>{},close:async()=>{},product:{read:()=>new Promise(()=>{})}})
+}),{timeoutMs:30});
+assert.equal(productTimeout.failure_stage,7);assert.equal(productTimeout.product_read_returned,false);
+assert.equal(productTimeout.client_closed,true);assert.equal(productTimeout.harness_settled,true);count++;
 
 // Self-authored bytes only. Electron's documented virtual stat semantics are
 // represented explicitly: a .asar root is a directory, not its physical file.
@@ -255,6 +291,19 @@ try {
   await assert.rejects(verifyPhysicalFile(archive, '0'.repeat(64), 1024, fs), TypeError);
   await assert.rejects(verifyVirtualFile(path.join(archive, 'lib', 'public.js'), digest, bytes.length + 1, virtual), TypeError);
   await assert.rejects(verifyPhysicalFile(archive, digest, 1024, {}), TypeError); count++;
+  const productFile = path.join(folder, 'synthetic-product.json');
+  const rawProduct = { productName:'WorkBuddy',applicationName:'WorkBuddy',authentication:{id:'workbuddy-desktop',type:'account-scoped-external-link',attributes:{platform:'workbuddy'}},
+    include:'synthetic',productConfigEnv:'synthetic',productConfigPathEnv:'synthetic',replacements:{},mergeStrategy:'synthetic' };
+  const productBytes = Buffer.from(JSON.stringify(rawProduct));
+  await fs.writeFile(productFile, productBytes, {flag:'wx'});
+  const productHash = createHash('sha256').update(productBytes).digest('hex');
+  const projected = await loadPhysicalProduct(productFile, fs, productHash);
+  assert.equal(projected.kind,'overlay');assert.equal(projected.schemaVersion,1);
+  assert.equal(projected.configuration.productVersion,'5.9.3');
+  for(const key of ['include','productConfigEnv','productConfigPathEnv','replacements','mergeStrategy']) assert.equal(Object.hasOwn(projected.configuration,key),false);
+  assert.deepEqual(projected.configuration.authentication,rawProduct.authentication);
+  await assert.rejects(loadPhysicalProduct(productFile, fs), TypeError); // synthetic bytes cannot match official pin
+  await assert.rejects(loadPhysicalProduct(productFile, fs, '0'.repeat(64)), TypeError); count++;
   const f = fixture();
   const rejectedPhysical = await runHandshake(f.load, {
     verifyEntry: () => verifyPhysicalFile(archive, digest, 1024, virtual)

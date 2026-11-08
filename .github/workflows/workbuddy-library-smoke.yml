@@ -1,4 +1,4 @@
-name: WorkBuddy library initialization evidence diagnostic
+name: WorkBuddy library Product-only diagnostic
 on:
   push:
     paths:
@@ -32,22 +32,22 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python -m unittest discover -s tests -v
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: Exactly one isolated library initialization evidence and close
+      - name: Exactly one external-account WorkBuddy Product read and close
         shell: pwsh
         env:
           PYTHONPATH: code/src
         run: |
           $sevenZip = Join-Path $env:ProgramFiles '7-Zip/7z.exe'
           if (-not (Test-Path -LiteralPath $sevenZip -PathType Leaf)) { throw 'RUNNER_7ZIP_MISSING' }
-          $runRoot = Join-Path $env:RUNNER_TEMP 'native-harness-library-connect-evidence-once'
-          $summary = Join-Path $env:GITHUB_WORKSPACE 'library-connect-evidence-sanitized-summary.json'
+          $runRoot = Join-Path $env:RUNNER_TEMP 'native-harness-library-product-once'
+          $summary = Join-Path $env:GITHUB_WORKSPACE 'library-product-sanitized-summary.json'
           python code/tools/official_workbuddy_library.py --seven-zip "$sevenZip" --run-root "$runRoot" --summary "$summary"
           exit $LASTEXITCODE
       - name: Sanitized own summary only
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
-          name: library-connect-evidence-sanitized-summary
-          path: library-connect-evidence-sanitized-summary.json
+          name: library-product-sanitized-summary
+          path: library-product-sanitized-summary.json
           if-no-files-found: warn
           retention-days: 7

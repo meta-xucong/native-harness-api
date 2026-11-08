@@ -1,4 +1,4 @@
-"""Review-only hosted Windows, empty-account library handshake supervisor.
+"""Hosted Windows, external-account WorkBuddy Product-only supervisor.
 
 No stdin protocol; no raw vendor output export. OwnedWindowsJob is not a sandbox.
 """
@@ -18,8 +18,9 @@ from official_workbuddy_smoke import acquire, INSTALLER_SHA
 
 LIMIT = 1024 * 1024
 RETAINED = []
-BOOLS = ('entry_verified','import_ok','harness_created','client_created','connect_returned','connected','client_closed',
-         'harness_closed','harness_settled','success')
+BOOLS = ('entry_verified','product_config_verified','import_ok','harness_created','client_created',
+         'connect_returned','auth_methods_empty','connected','product_read_returned','product_ready',
+         'product_identity_verified','client_closed','harness_closed','harness_settled','success')
 KEYS = set(BOOLS) | {'schema_version','protocol_version','failure_stage','elapsed_ms','error_class','error_detail','elicitation_seen'}
 PIN = {'package.json':'9f7aaf7ba9cf0f8bb961e22a80c9e7ac24c2fcb4232b145e91eb39bcecb539a4',
        'lib/public.js':'8bfbfd68b6f4c04c70a94e1943ecc2a391dd5618e4a1cff087f77ea9d5402733'}
@@ -51,14 +52,19 @@ def parse_dto(raw):
         d=json.loads(raw.decode('utf8'),object_pairs_hook=unique,parse_constant=invalid)
         require(type(d) is dict and set(d)==KEYS)
         require(all(type(d[k]) is bool for k in BOOLS))
-        for key,maximum in [('schema_version',3),('protocol_version',1),('failure_stage',7),('elapsed_ms',120000),('error_class',17),('error_detail',11),('elicitation_seen',1)]:
+        for key,maximum in [('schema_version',4),('protocol_version',1),('failure_stage',8),('elapsed_ms',120000),('error_class',17),('error_detail',11),('elicitation_seen',1)]:
             require(type(d[key]) is int and 0<=d[key]<=maximum)
-        require(d['schema_version']==3)
-        require(not d['import_ok'] or d['entry_verified'])
+        require(d['schema_version']==4)
+        require(not d['product_config_verified'] or d['entry_verified'])
+        require(not d['import_ok'] or d['entry_verified'] and d['product_config_verified'])
         require((d['error_class']==0)==(d['failure_stage']==0))
         require(d['failure_stage']!=0 or d['error_detail']==0 and d['elicitation_seen']==0)
-        require(not d['connected'] or d['connect_returned'])
+        require(not d['auth_methods_empty'] or d['connect_returned'])
+        require(not d['connected'] or d['connect_returned'] and d['auth_methods_empty'])
         require(not d['connect_returned'] or d['client_created'] and d['harness_created'] and d['import_ok'])
+        require(not d['product_read_returned'] or d['connected'])
+        require(not d['product_ready'] or d['product_read_returned'])
+        require(not d['product_identity_verified'] or d['product_ready'])
         # Success cannot be inferred from a partial child report.
         complete=all(d[k] for k in BOOLS if k!='success') and d['protocol_version']==1 and d['failure_stage']==0 and d['error_class']==0 and d['elicitation_seen']==0
         require(d['success']==complete)
@@ -229,8 +235,8 @@ def main(argv=None):
     try:
         require(os.name=='nt' and os.environ.get('GITHUB_ACTIONS')=='true' and os.environ.get('RUNNER_ENVIRONMENT')=='github-hosted')
         require(args.run_root.is_absolute() and args.summary.is_absolute())
-        require(args.run_root==Path(os.environ['RUNNER_TEMP'])/'native-harness-library-connect-evidence-once')
-        require(args.summary==Path(os.environ['GITHUB_WORKSPACE'])/'library-connect-evidence-sanitized-summary.json')
+        require(args.run_root==Path(os.environ['RUNNER_TEMP'])/'native-harness-library-product-once')
+        require(args.summary==Path(os.environ['GITHUB_WORKSPACE'])/'library-product-sanitized-summary.json')
         ancestors(args.run_root.parent); ancestors(args.summary.parent); require(not args.summary.exists())
         report['preflight_stage']=2
         args.run_root.mkdir()
@@ -252,7 +258,7 @@ def main(argv=None):
         command=[str(executable),str(driver),'--package-root',str(package),'--run-root',str(args.run_root)]
         report['preflight_stage']=6
         report=collect(supervise(command,workspace,env),output,trusted); report['preflight']=True; report['preflight_stage']=0
-        report['loader_revision']=4; report['archive_pair_verified']=True
+        report['loader_revision']=5; report['archive_pair_verified']=True
     except (Exception,KeyboardInterrupt): pass
     # Reconstructed own DTO only; no raw strings or errors.
     try:

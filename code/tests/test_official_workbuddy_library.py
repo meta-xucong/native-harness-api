@@ -16,7 +16,11 @@ import official_workbuddy_library as p
 
 
 def dto():
-    return {**{k:True for k in p.BOOLS},'schema_version':3,'protocol_version':1,'failure_stage':0,'elapsed_ms':1,'error_class':0,'error_detail':0,'elicitation_seen':0}
+    return {**{k:True for k in p.BOOLS},'schema_version':4,'protocol_version':1,'failure_stage':0,'elapsed_ms':1,'error_class':0,'error_detail':0,'elicitation_seen':0}
+
+def no_product_read(d):
+    d.update(product_read_returned=False,product_ready=False,product_identity_verified=False)
+    return d
 
 class Input(io.BytesIO):
     def write(self,_): raise AssertionError('stdin must never be written')
@@ -68,25 +72,25 @@ class Tests(unittest.TestCase):
             (package/'lib/public.js').write_bytes(b'changed!!')
             with self.assertRaises(p.Rejected):check(good)
 
-    def test_schema3_error_classes_and_entry_order(self):
+    def test_schema4_error_classes_and_entry_order(self):
         for error in range(1,18):
-            d=dto(); d.update(success=False,import_ok=False,harness_created=False,client_created=False,
+            d=no_product_read(dto()); d.update(success=False,import_ok=False,harness_created=False,client_created=False,
                 connect_returned=False,connected=False,client_closed=False,harness_closed=False,harness_settled=False,
-                protocol_version=0,failure_stage=1,error_class=error)
+                auth_methods_empty=False,protocol_version=0,failure_stage=1,error_class=error)
             self.assertEqual(p.parse_dto(json.dumps(d).encode())['error_class'],error)
         d=dto();d['schema_version']=1
         with self.assertRaises(p.Rejected):p.parse_dto(json.dumps(d).encode())
 
     def test_connect_return_evidence(self):
-        d=dto();d.update(connected=False,success=False,protocol_version=0,failure_stage=4,error_class=8)
+        d=no_product_read(dto());d.update(connected=False,success=False,protocol_version=0,failure_stage=4,error_class=8)
         self.assertTrue(p.parse_dto(json.dumps(d).encode())['connect_returned'])
-        d['connect_returned']=False
+        d['connect_returned']=False;d['auth_methods_empty']=False
         self.assertFalse(p.parse_dto(json.dumps(d).encode())['connect_returned'])
         d['connected']=True
         with self.assertRaises(p.Rejected):p.parse_dto(json.dumps(d).encode())
         d['connected']=False;d['connect_returned']=True;d['client_created']=False
         with self.assertRaises(p.Rejected):p.parse_dto(json.dumps(d).encode())
-        d=dto();d.update(connected=False,success=False,protocol_version=0,failure_stage=4,error_class=8)
+        d=no_product_read(dto());d.update(connected=False,success=False,protocol_version=0,failure_stage=4,error_class=8)
         for detail in range(12):
             d['error_detail']=detail
             self.assertEqual(p.parse_dto(json.dumps(d).encode())['error_detail'],detail)
@@ -161,14 +165,38 @@ class Tests(unittest.TestCase):
         self.assertTrue(p.parse_dto(json.dumps(dto()).encode())['success'])
         for raw in [b'{}',b'{"a":1,"a":2}',b'{"a":NaN}',b'\xff',b' '*4097]:
             with self.assertRaises(p.Rejected): p.parse_dto(raw)
-        for key,val in [('protocol_version',True),('failure_stage',8),('elapsed_ms',float('inf')),
+        for key,val in [('protocol_version',True),('failure_stage',9),('elapsed_ms',float('inf')),
                         ('entry_verified',False),('error_class',18),('error_detail',12),('error_detail',True),('error_detail',1),('elicitation_seen',1),('elicitation_seen',2),('elicitation_seen',True),('error_class',True),('import_ok',False),('extra','SECRET')]:
             d=dto();d[key]=val
             with self.subTest(key=key),self.assertRaises(p.Rejected):p.parse_dto(json.dumps(d).encode())
 
     def test_partial_not_success(self):
-        d=dto();d['connected']=False;d['success']=False;d['failure_stage']=4;d['error_class']=8
+        d=no_product_read(dto());d['connected']=False;d['success']=False;d['failure_stage']=4;d['error_class']=8
         self.assertFalse(p.parse_dto(json.dumps(d).encode())['success'])
+
+    def test_product_evidence_order_and_partial_failure(self):
+        d=no_product_read(dto());d.update(success=False,failure_stage=8,error_class=8)
+        self.assertFalse(p.parse_dto(json.dumps(d).encode())['product_read_returned'])
+        d['product_read_returned']=True
+        self.assertFalse(p.parse_dto(json.dumps(d).encode())['product_ready'])
+        d['product_ready']=True
+        self.assertFalse(p.parse_dto(json.dumps(d).encode())['product_identity_verified'])
+        for earlier,later in [('entry_verified','product_config_verified'),
+                              ('product_config_verified','import_ok'),
+                              ('connect_returned','auth_methods_empty'),
+                              ('auth_methods_empty','connected'),
+                              ('connected','product_read_returned'),
+                              ('product_read_returned','product_ready'),
+                              ('product_ready','product_identity_verified')]:
+            broken=dto();broken.update(success=False,failure_stage=8,error_class=8)
+            broken[earlier]=False;broken[later]=True
+            with self.subTest(earlier=earlier,later=later),self.assertRaises(p.Rejected):
+                p.parse_dto(json.dumps(broken).encode())
+        for key in ['product_config_verified','auth_methods_empty','product_read_returned',
+                    'product_ready','product_identity_verified']:
+            bad=dto();bad[key]=1
+            with self.subTest(key=key),self.assertRaises(p.Rejected):
+                p.parse_dto(json.dumps(bad).encode())
 
     def test_fixed_file(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -185,10 +213,16 @@ class Tests(unittest.TestCase):
             with self.assertRaises(p.Rejected): p.read_dto(output,p.identity(output))
 
     def test_environment_no_inheritance(self):
-        with tempfile.TemporaryDirectory() as tmp,patch.dict(os.environ,{'NODE_OPTIONS':'secret','GITHUB_TOKEN':'secret','HTTP_PROXY':'secret'}):
+        ambient={key:'secret' for key in ['NODE_OPTIONS','GITHUB_TOKEN','HTTP_PROXY',
+            'CODEBUDDY_API_KEY','CODEBUDDY_AUTH_TOKEN','CODEBUDDY_CONFIG_PATH',
+            'ACC_PRODUCT_CONFIG_PATH','CODEBUDDY_CREDENTIALS_IN_MEMORY','SANDBOX_CENTER_IPC_ADDRESS']}
+        with tempfile.TemporaryDirectory() as tmp,patch.dict(os.environ,ambient):
             env=p.environment(Path(tmp))
-            self.assertNotIn('NODE_OPTIONS',env);self.assertNotIn('GITHUB_TOKEN',env);self.assertNotIn('HTTP_PROXY',env)
+            for key in ambient:self.assertNotIn(key,env)
             self.assertEqual(env['HOME'],env['USERPROFILE'])
+            for key in ['HOME','USERPROFILE','APPDATA','LOCALAPPDATA','TEMP','TMP',
+                        'CODEBUDDY_CONFIG_DIR','WORKBUDDY_CONFIG_DIR']:
+                self.assertTrue(Path(env[key]).is_relative_to(Path(tmp)/'isolated'))
 
     def test_owned_cleanup_failure(self):
         o=Owner();o.close=lambda _: (_ for _ in ()).throw(OSError())

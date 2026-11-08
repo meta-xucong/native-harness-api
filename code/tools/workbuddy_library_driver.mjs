@@ -1,12 +1,13 @@
-/** One hosted no-account library handshake. Importing this file loads only Node builtins. */
+/** One hosted external-account Product-only probe. Import loads only Node builtins. */
 import { open, lstat, realpath } from 'node:fs/promises';
-import { homedir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createHash } from 'node:crypto';
 import { performance } from 'node:perf_hooks';
 import { createRequire } from 'node:module';
 
+const PRODUCT_SHA = 'a73bea91defd7d5f38d5672c19111681ba52244ee8b9b64cc59dc3e3992eed61';
 const PUBLIC_SHA = '8bfbfd68b6f4c04c70a94e1943ecc2a391dd5618e4a1cff087f77ea9d5402733';
 const ASAR_SHA = 'dcabcd90f07a627a06f1fd55bc872a1c25a79aab43c3012930b6287840ab3d20';
 class Deadline extends Error {}
@@ -59,12 +60,12 @@ const bounded = async (operation, ms, now = () => performance.now()) => {
 };
 
 /** Injectable only for self-authored fixtures; real caller supplies one pinned import. */
-export async function runHandshake(loadApi, { configDir, verifyEntry, timeoutMs = 30000, cleanupMs = 10000 } = {}, now = () => performance.now()) {
-  if (typeof verifyEntry !== 'function') throw new TypeError();
+export async function runHandshake(loadApi, { configDir, verifyEntry, loadProduct, timeoutMs = 30000, cleanupMs = 10000 } = {}, now = () => performance.now()) {
+  if (typeof verifyEntry !== 'function' || typeof loadProduct !== 'function') throw new TypeError();
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 30000 ||
       !Number.isSafeInteger(cleanupMs) || cleanupMs < 1 || cleanupMs > 10000) throw new TypeError();
   const start = now();
-  const dto = { schema_version: 3, entry_verified: false, import_ok: false, harness_created: false, client_created: false, connect_returned: false, connected: false,
+  const dto = { schema_version: 4, entry_verified: false, product_config_verified: false, product_read_returned: false, product_ready: false, product_identity_verified: false, auth_methods_empty: false, import_ok: false, harness_created: false, client_created: false, connect_returned: false, connected: false,
     client_closed: false, harness_closed: false, harness_settled: false, success: false,
     protocol_version: 0, failure_stage: 0, error_class: 0, error_detail: 0, elicitation_seen: 0, elapsed_ms: 0 };
   const controller = new AbortController();
@@ -78,6 +79,10 @@ export async function runHandshake(loadApi, { configDir, verifyEntry, timeoutMs 
     await bounded(verifyEntry, remaining(), now);
     remaining();
     dto.entry_verified = true;
+    const productConfig = await bounded(loadProduct, remaining(), now);
+    remaining();
+    if (!productConfig || productConfig.schemaVersion !== 1 || productConfig.kind !== 'overlay' || !productConfig.configuration) throw new TypeError();
+    dto.product_config_verified = true;
     const api = await bounded(loadApi, remaining(), now);
     dto.import_ok = true;
     stage = 2;
@@ -87,7 +92,7 @@ export async function runHandshake(loadApi, { configDir, verifyEntry, timeoutMs 
       remaining();
       const creation = Promise.resolve().then(() => {
         remaining();
-        return api.createHarness({ configDir, strictMcpConfig: true, signal: controller.signal });
+        return api.createHarness({ configDir, productConfig, strictMcpConfig: true, signal: controller.signal });
       });
       creation.then(value => {
         if (controller.signal.aborted && !harness) Promise.resolve().then(() => value.close()).catch(() => {});
@@ -100,7 +105,7 @@ export async function runHandshake(loadApi, { configDir, verifyEntry, timeoutMs 
     dto.harness_created = true;
     stage = 3;
     remaining();
-    client = api.createClient({ account: { mode: 'external' }, product: { mode: 'external' },
+    client = api.createClient({ account: { mode: 'external' }, product: { mode: 'managed' },
       capabilities: { elicitation: { form: {}, url: {} } } });
     if (!client || typeof client.connect !== 'function' || typeof client.close !== 'function' || typeof client.on !== 'function') throw new TypeError();
     dto.client_created = true;
@@ -119,7 +124,19 @@ export async function runHandshake(loadApi, { configDir, verifyEntry, timeoutMs 
     remaining();
     if (dto.elicitation_seen !== 0 || client.initialization?.protocolVersion !== 1) throw new TypeError();
     dto.protocol_version = 1;
+    const methods = client.initialization.authMethods;
+    if (methods !== undefined && (!Array.isArray(methods) || methods.length !== 0)) throw new TypeError();
+    dto.auth_methods_empty = true; // None advertised; external Account hides the catalog.
     dto.connected = true;
+    stage = 8;
+    if (typeof client.product?.read !== 'function') throw new TypeError();
+    const product = await bounded(() => client.product.read({}), remaining(), now);
+    dto.product_read_returned = true;
+    remaining();
+    if (dto.elicitation_seen !== 0 || product?.state !== 'ready' || product.mode !== 'managed') throw new TypeError();
+    dto.product_ready = true;
+    if (product.productName !== 'WorkBuddy' || product.applicationName !== 'WorkBuddy' || product.productVersion !== '5.9.3') throw new TypeError();
+    dto.product_identity_verified = true;
   } catch (error) {
     dto.failure_stage = error instanceof Deadline ? 7 : stage;
     dto.error_class = classifyError(error);
@@ -164,7 +181,7 @@ export async function runHandshake(loadApi, { configDir, verifyEntry, timeoutMs 
 
 export function complete(dto) {
   return dto.failure_stage === 0 && dto.error_class === 0 && dto.error_detail === 0 && dto.elicitation_seen === 0 && dto.protocol_version === 1 &&
-    ['entry_verified', 'import_ok', 'harness_created', 'client_created', 'connect_returned', 'connected', 'client_closed', 'harness_closed', 'harness_settled']
+    ['product_config_verified', 'product_read_returned', 'product_ready', 'product_identity_verified', 'auth_methods_empty', 'entry_verified', 'import_ok', 'harness_created', 'client_created', 'connect_returned', 'connected', 'client_closed', 'harness_closed', 'harness_settled']
       .every(key => dto[key] === true);
 }
 
@@ -209,6 +226,38 @@ export async function verifyPhysicalFile(file, expectedHash, maximum, fs) {
   return info.size;
 }
 
+/** Hash and parse the same bounded physical bytes; no second path read. */
+export async function loadPhysicalProduct(file, fs, expectedHash = PRODUCT_SHA) {
+  await physical(file, false, fs);
+  const info = await fs.lstat(file);
+  if (info.nlink !== 1 || info.size > 1024 * 1024) throw new TypeError();
+  const source = await fs.open(file, 'r');
+  let bytes;
+  try {
+    const opened = await source.stat();
+    if (!opened.isFile() || opened.nlink !== 1 || opened.size !== info.size || opened.dev !== info.dev || opened.ino !== info.ino) throw new TypeError();
+    const chunks = []; let total = 0;
+    for (;;) {
+      const buffer = Buffer.alloc(65536);
+      const { bytesRead } = await source.read(buffer, 0, buffer.length, null);
+      if (!bytesRead) break;
+      total += bytesRead;
+      if (total > 1024 * 1024) throw new TypeError();
+      chunks.push(buffer.subarray(0, bytesRead));
+    }
+    bytes = Buffer.concat(chunks);
+    if (total !== opened.size || createHash('sha256').update(bytes).digest('hex') !== expectedHash) throw new TypeError();
+  } finally { await source.close(); }
+  const configuration = JSON.parse(bytes.toString('utf8'));
+  if (!configuration || Array.isArray(configuration) || configuration.productName !== 'WorkBuddy' ||
+      configuration.applicationName !== 'WorkBuddy' || configuration.authentication?.id !== 'workbuddy-desktop' ||
+      configuration.authentication?.type !== 'account-scoped-external-link' ||
+      configuration.authentication?.attributes?.platform !== 'workbuddy') throw new TypeError();
+  for (const key of ['include', 'productConfigEnv', 'productConfigPathEnv', 'replacements', 'mergeStrategy']) delete configuration[key];
+  configuration.productVersion = '5.9.3';
+  return { schemaVersion: 1, kind: 'overlay', configuration };
+}
+
 export async function verifyVirtualFile(file, expectedHash, expectedSize, fs) {
   await verifyBytes(file, expectedHash, 1024 * 1024, expectedSize, fs);
 }
@@ -229,18 +278,24 @@ async function main(argv) {
     const packageRoot = argv[1], root = argv[3];
     const home = path.join(root, 'isolated', 'home');
     const config = path.join(root, 'isolated', 'config');
+    const temp = path.join(root, 'isolated', 'temp');
+    const appdata = path.join(root, 'isolated', 'appdata');
+    const localappdata = path.join(root, 'isolated', 'localappdata');
     const dto = path.join(root, 'output', 'library-summary.json');
     const resources = path.join(root, 'official', 'resources');
     if (packageRoot !== path.join(resources, 'app.asar.unpacked', 'node_modules', '@genie', 'agent-harness')) throw new TypeError();
     const archive = path.join(resources, 'app.asar');
     const entry = path.join(packageRoot, 'lib', 'public.js');
     const virtualEntry = path.join(archive, 'node_modules', '@genie', 'agent-harness', 'lib', 'public.js');
-    for (const value of [root, home, config, path.dirname(dto)]) await physical(value, true, physicalFs);
-    for (const value of [home, config, dto, entry]) inside(root, value);
+    for (const value of [root, home, config, temp, appdata, localappdata, path.join(root, 'workspace'), path.dirname(dto)]) await physical(value, true, physicalFs);
+    for (const value of [home, config, temp, appdata, localappdata, dto, entry]) inside(root, value);
     if (home !== path.join(root, 'isolated', 'home') || config !== path.join(root, 'isolated', 'config') ||
         dto !== path.join(root, 'output', 'library-summary.json') ||
         path.resolve(homedir()).toLowerCase() !== home.toLowerCase() ||
+        path.resolve(tmpdir()).toLowerCase() !== temp.toLowerCase() ||
         process.env.USERPROFILE !== home || process.env.HOME !== home ||
+        process.env.TEMP !== temp || process.env.TMP !== temp ||
+        process.env.APPDATA !== appdata || process.env.LOCALAPPDATA !== localappdata ||
         process.env.CODEBUDDY_CONFIG_DIR !== config || process.env.WORKBUDDY_CONFIG_DIR !== config ||
         process.cwd() !== path.join(root, 'workspace')) throw new TypeError();
     // Reserve after path/environment validation, before checks that differ between
@@ -248,6 +303,7 @@ async function main(argv) {
     output = await physicalFs.open(dto, 'wx', 0o600);
     const result = await runHandshake(() => import(pathToFileURL(virtualEntry).href), {
       configDir: config,
+      loadProduct: () => loadPhysicalProduct(path.join(resources, 'app.asar.unpacked', 'cli', 'product.json'), physicalFs),
       verifyEntry: async () => {
         const entrySize = await verifyPhysicalFile(entry, PUBLIC_SHA, 1024*1024, physicalFs);
         await verifyPhysicalFile(archive, ASAR_SHA, 1024**3, physicalFs);

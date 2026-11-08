@@ -1,4 +1,9 @@
-# Review-only root beta.15 virtual-ASAR library handshake
+# Root beta.15 virtual-ASAR library diagnostics
+
+The earlier sections preserve historical experiment scopes and results. The
+current proposed scope is **revision 5, external-account Product-only**, below.
+Each changed executable experiment needs exact-source independent review before
+its single push-triggered cloud run. No user-PC/account/model permission follows.
 
 New separate controller, not a retry of the CLI or installed diagnostic. Do not
 publish or execute official runtime until exact source/command independent review.
@@ -219,3 +224,79 @@ capability correction is consistent with the static mismatch; the historical
 failed run's exact exception remains unknown. No retry, local-PC action, account
 inspection, real model call, merge or deployment occurred. Product remains
 NOT_READY_FOR_DIRECT_REAL_USE.
+
+## Revision 5: genuine WorkBuddy Product, external account
+
+This is a new bounded cloud experiment, not a managed-account catalog or login
+test. Root coordination authorized this Product-only step after exact source
+review. It retains the pinned official CN WorkBuddy 5.9.3 distribution, physical
+`original-fs`/virtual-ASAR loading, external account mode, form/url cancellation
+policy, deadlines and owned Windows Job cleanup. No vendor bytes are changed.
+
+Before vendor import, the driver opens the fixed official
+`resources/app.asar.unpacked/cli/product.json` through `original-fs`. It rejects
+links/nonregular or oversized files, compares open-handle identity, bounds the
+read to 1 MiB, and hashes the **same bytes** subsequently parsed as JSON. Expected
+SHA256 is `a73bea91defd7d5f38d5672c19111681ba52244ee8b9b64cc59dc3e3992eed61`.
+The complete extraction tree was already independently pinned by the parent.
+The object must retain WorkBuddy name/application, `workbuddy-desktop` auth id,
+`account-scoped-external-link` auth type and `workbuddy` auth platform. Only the
+five loader-control fields `include`, `productConfigEnv`, `productConfigPathEnv`,
+`replacements`, `mergeStrategy` are removed. Version is set to the pinned ASAR
+application's actual `5.9.3`. All original endpoints and other Product data remain.
+The overlay envelope is passed explicitly to `createHarness({productConfig})`.
+This is public Product data, not a copied account, token, protection capability,
+private host identity or authority snapshot.
+
+Static call-site review establishes that explicit Product input uses an empty
+resolver base. Omitting Product would use the root library's default **CodeBuddy**
+configuration. An explicit name/auth-only object would instead lack required
+routing data; neither is a substitute for the full official WorkBuddy projection.
+The native GUI uses this same five-field stripping/version-fill projection shape,
+but that precedent does not transfer its authenticated authority.
+
+Client modes are now `{account:{mode:'external'},product:{mode:'managed'}}`.
+In the pinned auth runtime, external account skips native managed account
+discovery/preparation, regardless of Product mode. No authentication methods
+are advertised in this profile. After the existing one connect/initialize pair,
+the diagnostic requires absent or empty `initialization.authMethods`, then calls
+exactly **one `client.product.read({})`**. This read returns a public anonymous
+Product snapshot, not an account or model catalog. It must report state `ready`,
+mode `managed`, product/application `WorkBuddy`, and version `5.9.3`.
+No login/logout/authenticate, account read/restore/provision, Product provision,
+workspace preparation, session creation/read/catalog, model/query/prompt, MCP
+mutation, browser opening or accepted elicitation is initiated by the controller.
+Empty authMethods means none advertised, not proof of managed login availability.
+
+Schema 4 adds five strict booleans: `product_config_verified` (pinned input
+verified, not a claim that the vendor parser has already run), `auth_methods_empty`,
+`product_read_returned`, `product_ready`, and `product_identity_verified`.
+All must hold, together with prior handshake/close evidence, for success.
+New failure stage 8 covers Product read/validation; deadline remains stage 7.
+The Python parent validates evidence ordering and finite error mappings. Only
+these booleans and bounded numbers leave the child, never the Product response,
+endpoints, URLs, account data, raw exceptions or native output.
+
+The startup surface is **not side-effect-free**. Settings initialization still
+reads native USER settings and can create adjacent locks/directories or migrate
+credential fields if present. `configDir` alone does not cover every native path;
+customization snapshots can affect paths. A fresh process and allowlisted env
+exclude ambient tokens/helpers/product-spill/proxy/host-bootstrap variables.
+Fresh HOME/USERPROFILE, both app-data roots, config, temp and workspace are
+created; child checks Node homedir and tmpdir plus the exact environment/path
+identities before vendor import. This reduces exposure but is not a filesystem
+or network sandbox. Native/transitive imports, platform APIs, telemetry and other
+implicit activity remain incompletely characterized. Outbound is not blocked.
+No protected-store restoration or protection downgrade is allowed.
+
+One reviewed run uses fresh fixed root
+`RUNNER_TEMP/native-harness-library-product-once`, sole public summary
+`library-product-sanitized-summary.json`, artifact
+`library-product-sanitized-summary`, and metadata `loader_revision=5`.
+The child-only DTO remains `output/library-summary.json`. Windows self-authored
+fixtures/full test prerequisite must pass before vendor execution. No retries
+reuse the root; raw logs/profiles/extraction are never artifacts. Ordinary adapter
+source CI is separate. This document records the intended revision, not a run
+result. Even success would establish only this pinned CN Product projection and
+public readiness with no account, not GUI account reuse, installed 5.8.4 or INTL
+compatibility, entitlement, model success, or an enabled real-use API channel.
