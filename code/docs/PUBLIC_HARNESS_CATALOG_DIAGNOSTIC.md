@@ -101,5 +101,44 @@ PYTHONPATH=src python -m unittest discover -s tests -p 'test_public_harness_cata
 The dedicated workflow must pass the complete offline suite, including the real
 Windows owned **self-authored** peer, before the single native experiment. Its
 artifact is diagnostic evidence only, not a downloadable production release.
-At source preparation time native execution is **NOT_RUN**; record the actual
-run/result separately rather than interpreting fixture success as native proof.
+At initial source preparation native execution was **NOT_RUN**. The actual
+result below is separate evidence, not an inference from fixture success.
+
+## Verified hosted result: 08588933
+
+Commit `08588933ef8889fc448be8384b5e3eee9c5d926a`, tree
+`aea6a3013e6328aa66448960589ac0e433a92d7e`, completed the single
+[anonymous SFE run](https://github.com/meta-xucong/native-harness-api/actions/runs/42442423309)
+successfully on attempt 1. The job was `128614270682` and its sanitized artifact
+was `13602331568`.
+
+- All archive, executable, complete-tree and generated Product pins matched.
+- The actual official SFE accepted the CN WorkBuddy Product, returned the exact
+  public catalog, and reported an unauthenticated account and auth status.
+- Five outbound frames (four requests plus `initialized`) and four response
+  frames; stdin 525 bytes, stdout 1540 bytes, stderr zero. No interaction request
+  was observed. Raw protocol contents were not exported.
+- Stdin closed; natural zero exit and naturally empty owned Job were observed.
+  Final process/Job, handles and IO-thread cleanup all completed.
+- `native_account_verified` and `real_model_ready` remained false. There was no
+  login, provision, session or model call.
+
+The artifact ZIP was 993 bytes, SHA-256
+`3c29f2555765ca3d17064c46eb23709ef59d8f043929a049dfc42af5950e941f`.
+Its sole JSON member SHA-256 was
+`812622046cc4e9ae73d8b576eea599313467df93980fd2baede2faed7d19076f`.
+
+The actual Windows prerequisite suite ran 532 tests with 4 skips, including the
+owned self-authored peer. Both ordinary source workflows also succeeded:
+[push](https://github.com/meta-xucong/native-harness-api/actions/runs/42442423283)
+and [PR](https://github.com/meta-xucong/native-harness-api/actions/runs/42442427061).
+Their inspected PR logs report Windows 532 tests/4 skips plus 9 controller
+tests; Linux 541 tests/46 skips. All 36 new tests passed on Windows; Linux passed
+35 and skipped the one Windows-specific process test. Exactly these three
+workflows were observed for that commit, all at attempt 1.
+
+This establishes a working **public native anonymous entry** independent of the
+old desktop library assembly. It does not establish managed login, model access,
+GUI account restoration, international Product compatibility, absence of native
+side effects, or readiness for direct real use. Real authentication remains a
+separately reviewed and authorized step.
