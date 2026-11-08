@@ -89,6 +89,12 @@ class HTTPIntegrationTests(unittest.TestCase):
         self.assertEqual(self.fake.start_count, 1)
 
     def test_concurrent_same_key_is_single_task(self):
+        # This asserts deduplication, not a 3/5-second disk/network benchmark.
+        # Windows CI fsync and connection scheduling under 12 simultaneous
+        # callers can exceed the normal fixture deadlines. Keep all requests
+        # and strict outcomes, with a bounded stress-test-only budget per hop.
+        self.http.timeout = self.bridge.http.timeout = 30
+        self.gateway.transport_timeout = 30
         def call(_):
             try:
                 self.send()

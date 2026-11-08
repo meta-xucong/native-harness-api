@@ -138,9 +138,14 @@ class NodePolicy:
     ledger_instance: str
     allowed_owners: frozenset[tuple[str, str]]
     bindings: tuple[Binding, ...]
+    mode: str = "p1b_integration"
 
     def __post_init__(self):
         try:
+            if self.mode not in {"p1b_integration", "workbuddy_local_trial", "harness_local_trial"}:
+                raise ValueError()
+            if self.mode in {"workbuddy_local_trial", "harness_local_trial"} and len(self.allowed_owners) != 1:
+                raise ValueError()
             identifier(self.source)
             identifier(self.ledger_instance)
             if type(self.allowed_owners) is not frozenset or not self.allowed_owners:
@@ -157,6 +162,8 @@ class NodePolicy:
                     raise ValueError()
                 # Revalidate even an object constructed through unsafe reflection.
                 Binding(**binding.wire())
+                if self.mode in {"workbuddy_local_trial", "harness_local_trial"} and (not binding.model_alias.startswith(("workbuddy-", "codex-") if self.mode == "harness_local_trial" else ("workbuddy-",)) or binding.native_model.startswith("fake-")):
+                    raise ValueError()
             fingerprints = [digest(binding.wire()) for binding in self.bindings]
             if len(set(fingerprints)) != len(fingerprints):
                 raise ValueError()
@@ -193,6 +200,8 @@ class NodePolicy:
             if not isinstance(frozen, dict) or set(frozen) != {'binding', 'messages', 'client_request'}:
                 raise ValueError()
             client = normalize_request(frozen['client_request'])
+            if self.mode in {"workbuddy_local_trial", "harness_local_trial"} and (len(client["messages"]) != 1 or client["messages"][0]["role"] != "user"):
+                raise ValueError()
             if canonical(frozen['client_request']) != canonical(client):
                 raise ValueError()
             checked_task(task, identity, digest(client), self.ledger_instance)
@@ -302,7 +311,9 @@ class Runner:
         self.journal.save(record)  # Must succeed before any upload or slot reuse.
         return self._upload(record)
 
-    def run_once(self):
+    def run_once(self, *, allow_new=True):
+        if type(allow_new) is not bool:
+            raise ValueError('allow_new must be a boolean')
         with self.journal.locked():
             for record in self.journal.records():
                 frozen = record['task']
@@ -328,6 +339,8 @@ class Runner:
                     except Exception:
                         pass
                 return self._observe(record)
+            if not allow_new:
+                return {'outcome': 'idle'}
             offer = self.client.next_task()
             if offer is None:
                 return {'outcome': 'idle'}
@@ -358,7 +371,12 @@ class Runner:
             try:
                 if self.before_start is not None:
                     self.before_start()
-                value = self.adapter.start(task, grant)
+                if getattr(self.adapter, 'supports_live_events', False) is True:
+                    def publish_event(seq, event):
+                        return self.client.event(task_id, claim['claim_id'], grant['start_grant_id'], seq, event)
+                    value = self.adapter.start(task, grant, publish_event=publish_event)
+                else:
+                    value = self.adapter.start(task, grant)
                 return self._accept(record, value)
             except Exception:
                 return self._observe(record, code='OBSERVATION_ERROR')

@@ -8,7 +8,8 @@ from .errors import ChannelError
 
 CONTRACT = "harness.invoke.v1"
 MAX_REQUEST_BYTES = 64 * 1024
-MAX_RESULT_BYTES = 256 * 1024
+MAX_RESULT_BYTES = 256 * 1024  # Aggregate decoded UTF-8 text/refusal bytes.
+MAX_RESULT_WIRE_BYTES = 6 * MAX_RESULT_BYTES + 4096  # JSON escapes + bounded envelope.
 ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
 
 
@@ -170,6 +171,8 @@ def completion(task):
             or result["outcome"] not in {"succeeded", "failed", "cancelled"}):
         raise ChannelError("NATIVE_INVALID_RESULT", accepted=True)
     if result["outcome"] == "failed":
+        if result.get("code") == "TASK_EXPIRED":
+            raise ChannelError("TASK_EXPIRED", 410, accepted=True)
         raise ChannelError("NATIVE_EMPTY_RESULT" if result.get("code") == "NATIVE_EMPTY_RESULT" else
                            "NATIVE_MODEL_MISMATCH" if result.get("code") == "MODEL_MISMATCH" else "NATIVE_FAILED", accepted=True)
     if result["outcome"] == "cancelled":
@@ -193,6 +196,8 @@ def completion(task):
                     or not isinstance(block["text"], str) or not block["text"].strip()):
                 raise ChannelError("NATIVE_INVALID_RESULT", accepted=True)
             (texts if block["type"] == "text" else refusals).append(block["text"])
+        if sum(len(text.encode("utf-8")) for text in texts + refusals) > MAX_RESULT_BYTES:
+            raise ChannelError("RESULT_TOO_LARGE", accepted=True)
         message = {"role": "assistant", "content": "".join(texts) or None}
         if refusals:
             message["refusal"] = "".join(refusals)
@@ -202,7 +207,7 @@ def completion(task):
         usage = result.get("usage")
         if usage != {"state": "unknown"}:
             raise ChannelError("USAGE_NOT_SUPPORTED", accepted=True)  # measured usage is a later capability
-        if len(canonical(response).encode()) > MAX_RESULT_BYTES:
+        if len(canonical(response).encode()) > MAX_RESULT_WIRE_BYTES:
             raise ChannelError("RESULT_TOO_LARGE", accepted=True)
         return response
     except (KeyError, TypeError, AttributeError, UnicodeError):

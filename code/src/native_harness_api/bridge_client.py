@@ -10,7 +10,7 @@ import re
 import urllib.error
 import urllib.parse
 import urllib.request
-from .contracts import CONTRACT, MAX_RESULT_BYTES, NodeOffer, canonical, identifier, parse_json
+from .contracts import CONTRACT, MAX_RESULT_WIRE_BYTES, NodeOffer, canonical, identifier, parse_json
 from .errors import ChannelError
 
 
@@ -35,18 +35,20 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
 
 
 class HTTPTransport:
-    def __init__(self, base_url, token, *, timeout=5, max_response=MAX_RESULT_BYTES + 128 * 1024):
+    def __init__(self, base_url, token, *, timeout=5, max_response=MAX_RESULT_WIRE_BYTES + 128 * 1024):
         self.base_url = origin(base_url)
         if (not isinstance(token, str) or not 16 <= len(token) <= 4096
                 or any(ord(c) < 33 or ord(c) > 126 for c in token)):
             raise ValueError("An explicit service credential is required")
-        if not 0 < timeout <= 60 or not 1 <= max_response <= 1024 * 1024:
+        if not 0 < timeout <= 60 or not 1 <= max_response <= MAX_RESULT_WIRE_BYTES + 128 * 1024:
             raise ValueError("Invalid transport limits")
         self.token, self.timeout, self.max_response = token, timeout, max_response
         self.opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
 
     def request(self, method, path, payload=None, *, extra_headers=None):
-        if not path.startswith("/") or path.startswith("//") or "?" in path or "#" in path:
+        query_ok = (method == "GET" and re.fullmatch(
+            r"/bridge/v1/tasks/[A-Za-z0-9_.:-]+/harness-events\?after=(0|[1-9][0-9]{0,15})&limit=8", path))
+        if not path.startswith("/") or path.startswith("//") or ("?" in path and not query_ok) or "#" in path:
             raise ValueError("Invalid internal path")
         headers = {"Authorization": "Bearer " + self.token, "Accept": "application/json"}
         if extra_headers:
@@ -137,6 +139,12 @@ class BridgeClient:
         self.capabilities()
         return self.http.request("POST", "/bridge/v1/tasks", payload)
 
+    def events(self, task_id, cursor):
+        from .event_contract import parse_cursor
+        cursor = parse_cursor(str(cursor))
+        return self.http.request("GET", "/bridge/v1/tasks/" + self.key(task_id)
+                                 + "/harness-events?after=" + str(cursor) + "&limit=8")
+
     def task(self, task_id):
         return self.http.request("GET", "/bridge/v1/tasks/" + self.key(task_id))
 
@@ -144,6 +152,10 @@ class BridgeClient:
 class NodeClient:
     def __init__(self, base_url, token, **transport_options):
         self.http = HTTPTransport(base_url, token, **transport_options)
+
+    def heartbeat(self, state, binding_digests):
+        return self.http.request("POST", "/bridge/node/v1/harness-heartbeat",
+                                 {"state": state, "binding_digests": binding_digests})
 
     def next_task(self):
         value = self.http.request("GET", "/bridge/node/v1/tasks/next")
@@ -168,6 +180,19 @@ class NodeClient:
         return self.http.request("POST", f"/bridge/node/v1/tasks/{BridgeClient.key(task_id)}/harness-observation",
                                  {"claim_id": claim_id, "start_grant_id": grant_id,
                                   "outcome": outcome, "liveness": liveness, "code": code})
+
+    def event(self, task_id, claim_id, grant_id, event_seq, event):
+        from .native_live_events import checked_event, MAX_EVENTS
+        event, _ = checked_event(event)
+        if type(event_seq) is not int or not 1 <= event_seq <= MAX_EVENTS:
+            raise ValueError("LIVE_EVENT_SEQUENCE_INVALID")
+        receipt = self.http.request("POST", f"/bridge/node/v1/tasks/{BridgeClient.key(task_id)}/harness-event",
+            {"claim_id": claim_id, "start_grant_id": grant_id, "event_seq": event_seq, "event": event})
+        expected = {"remote_task_id": task_id, "claim_id": claim_id, "start_grant_id": grant_id,
+                    "event_seq": event_seq, "accepted": True}
+        if receipt != expected or type(receipt.get("event_seq")) is not int or receipt.get("accepted") is not True:
+            raise ChannelError("BRIDGE_INVALID_EVENT_ACK")
+        return True
 
     def result(self, task_id, claim_id, grant_id, result):
         receipt = self.http.request("POST", f"/bridge/node/v1/tasks/{BridgeClient.key(task_id)}/harness-result",

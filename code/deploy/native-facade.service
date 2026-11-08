@@ -1,0 +1,22 @@
+[Unit]
+Description=Native Harness server-only Facade
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=native-harness
+Group=native-harness
+WorkingDirectory=/opt/native-harness-api/code
+Environment=PYTHONPATH=/opt/native-harness-api/code/src
+Environment=PYTHONDONTWRITEBYTECODE=1
+EnvironmentFile=/etc/native-harness/facade.env
+ExecStart=/opt/native-harness-venv/bin/python -m native_harness_api.runtime facade --config /etc/native-harness/facade.json
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

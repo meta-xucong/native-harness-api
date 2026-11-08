@@ -1,0 +1,18 @@
+{
+  "bridge_origin": "https://bridge.your-authorized-domain.example",
+  "user_id": 7,
+  "api_key_id": 9,
+  "windows_bundle_root": "C:/NativeHarness",
+  "windows_profile_root": "C:/YourProfiles/profile-returned-by-login",
+  "bridge_data_dir": "/var/lib/native-harness-bridge",
+  "models": [
+    {
+      "model_alias": "workbuddy-model-a",
+      "native_model": "<copy-first-exact-id-from-Client-models>"
+    },
+    {
+      "model_alias": "workbuddy-model-b",
+      "native_model": "<copy-second-exact-id-from-Client-models>"
+    }
+  ]
+}

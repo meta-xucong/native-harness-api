@@ -1,0 +1,48 @@
+name: WorkBuddy cloud startup profile diagnostic
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'code/tools/official_workbuddy_profile.py'
+      - 'code/tests/test_official_workbuddy_profile.py'
+      - '.github/workflows/workbuddy-startup-profile.yml'
+permissions:
+  contents: read
+jobs:
+  profile:
+    runs-on: windows-2022
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.13.17'
+      - name: Offline fixtures and actual Windows lifecycle prerequisite
+        shell: pwsh
+        working-directory: code
+        env:
+          PYTHONPATH: src
+        run: |
+          python -m unittest discover -s tests -v
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Exactly one isolated cloud initialize with official profiler
+        shell: pwsh
+        env:
+          PYTHONPATH: code/src
+        run: |
+          $sevenZip = Join-Path $env:ProgramFiles '7-Zip/7z.exe'
+          if (-not (Test-Path -LiteralPath $sevenZip -PathType Leaf)) { throw 'RUNNER_7ZIP_MISSING' }
+          $runRoot = Join-Path $env:RUNNER_TEMP 'native-harness-startup-profile-once'
+          $summary = Join-Path $env:GITHUB_WORKSPACE 'startup-profile-summary.json'
+          python code/tools/official_workbuddy_profile.py --seven-zip "$sevenZip" --run-root "$runRoot" --summary "$summary"
+          exit $LASTEXITCODE
+      - name: Sanitized summary only, never raw profile or native streams
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: startup-profile-sanitized-summary
+          path: startup-profile-summary.json
+          if-no-files-found: warn
+          retention-days: 7

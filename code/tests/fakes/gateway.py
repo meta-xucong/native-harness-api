@@ -12,9 +12,10 @@ USER_TOKEN = "test-only-user-credential"
 
 
 class FakeGateway:
-    def __init__(self, path, routes, selected_route, *, tenant="tenant-1", principal="key-1"):
+    def __init__(self, path, routes, selected_route, *, tenant="tenant-1", principal="key-1", transport_timeout=3):
         self.path, self.routes, self.selected_route = str(path), routes, selected_route
         self.tenant, self.principal = tenant, principal
+        self.transport_timeout = transport_timeout
         self.allow_new = True
         self.outbound_attempts = 0
         with self.connection() as con:
@@ -62,7 +63,7 @@ class FakeGateway:
                 con.execute("INSERT INTO operations VALUES(?,?,?,?,?)", (scope, request_digest, operation, route, "unknown"))
         config = json.loads(route)
         self.outbound_attempts += 1
-        transport = HTTPTransport(config["url"], config["token"], timeout=3)
+        transport = HTTPTransport(config["url"], config["token"], timeout=self.transport_timeout)
         accepted = "unknown"
         try:
             # Incoming internal headers and user tag are deliberately not copied.

@@ -1,0 +1,324 @@
+/** One hosted external-account Product-only probe. Import loads only Node builtins. */
+import { open, lstat, realpath } from 'node:fs/promises';
+import { homedir, tmpdir } from 'node:os';
+import path from 'node:path';
+import { pathToFileURL } from 'node:url';
+import { createHash } from 'node:crypto';
+import { performance } from 'node:perf_hooks';
+import { createRequire } from 'node:module';
+
+const PRODUCT_SHA = 'a73bea91defd7d5f38d5672c19111681ba52244ee8b9b64cc59dc3e3992eed61';
+const PUBLIC_SHA = '8bfbfd68b6f4c04c70a94e1943ecc2a391dd5618e4a1cff087f77ea9d5402733';
+const ASAR_SHA = 'dcabcd90f07a627a06f1fd55bc872a1c25a79aab43c3012930b6287840ab3d20';
+class Deadline extends Error {}
+const RPC_CODES = new Map([[-32700, 9], [-32600, 10], [-32601, 11], [-32602, 12], [-32603, 13], [-32000, 14], [-32800, 15], [-32001, 16], [-32002, 17]]);
+const ERROR_DETAILS = Object.freeze({
+  'Invalid Harness initialize response': 1,
+  'ACP SDK did not create its client context': 2,
+  'Client connect timed out': 3,
+  'Client closed': 4,
+  'Harness is closing': 5,
+  'Agent Harness connection is closed': 6,
+  'RPC transport is closed': 7,
+  'RPC transport failed': 8,
+  'Internal error': 9,
+  'Invalid params': 10,
+  'Executor-backed MCP requires elicitation.form and elicitation.url client capabilities': 11
+});
+function ownData(error, key) {
+  try {
+    if (error === null || (typeof error !== 'object' && typeof error !== 'function')) return undefined;
+    const descriptor = Object.getOwnPropertyDescriptor(error, key);
+    return descriptor && Object.hasOwn(descriptor, 'value') ? descriptor.value : undefined;
+  } catch { return undefined; }
+}
+export function classifyDetail(error) {
+  const message = ownData(error, 'message');
+  return typeof message === 'string' && Object.hasOwn(ERROR_DETAILS, message) ? ERROR_DETAILS[message] : 0;
+}
+const ERROR_CODES = Object.freeze({ ERR_MODULE_NOT_FOUND: 1, MODULE_NOT_FOUND: 2,
+  ENOENT: 3, EACCES: 4, EPERM: 5, ERR_UNSUPPORTED_DIR_IMPORT: 6, ERR_UNKNOWN_FILE_EXTENSION: 7 });
+export function classifyError(error) {
+  // Only own data descriptors. No getters, stack, paths or string conversion.
+  const code = ownData(error, 'code');
+  if (typeof code === 'number') return RPC_CODES.get(code) ?? 8;
+  return typeof code === 'string' && Object.hasOwn(ERROR_CODES, code) ? ERROR_CODES[code] : 8;
+}
+
+const bounded = async (operation, ms, now = () => performance.now()) => {
+  if (!Number.isFinite(ms) || ms <= 0) throw new Deadline();
+  const end = now() + ms;
+  let timer;
+  try {
+    return await Promise.race([Promise.resolve().then(() => {
+      if (now() >= end) throw new Deadline();
+      return operation();
+    }), new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Deadline()), ms);
+    })]);
+  } finally { clearTimeout(timer); }
+};
+
+/** Injectable only for self-authored fixtures; real caller supplies one pinned import. */
+export async function runHandshake(loadApi, { configDir, verifyEntry, loadProduct, timeoutMs = 30000, cleanupMs = 10000 } = {}, now = () => performance.now()) {
+  if (typeof verifyEntry !== 'function' || typeof loadProduct !== 'function') throw new TypeError();
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 30000 ||
+      !Number.isSafeInteger(cleanupMs) || cleanupMs < 1 || cleanupMs > 10000) throw new TypeError();
+  const start = now();
+  const dto = { schema_version: 4, entry_verified: false, product_config_verified: false, product_read_returned: false, product_ready: false, product_identity_verified: false, auth_methods_empty: false, import_ok: false, harness_created: false, client_created: false, connect_returned: false, connected: false,
+    client_closed: false, harness_closed: false, harness_settled: false, success: false,
+    protocol_version: 0, failure_stage: 0, error_class: 0, error_detail: 0, elicitation_seen: 0, elapsed_ms: 0 };
+  const controller = new AbortController();
+  let harness, client, stage = 1;
+  const remaining = () => {
+    const left = timeoutMs - (now() - start);
+    if (left <= 0) throw new Deadline();
+    return left;
+  };
+  try {
+    await bounded(verifyEntry, remaining(), now);
+    remaining();
+    dto.entry_verified = true;
+    const productConfig = await bounded(loadProduct, remaining(), now);
+    remaining();
+    if (!productConfig || productConfig.schemaVersion !== 1 || productConfig.kind !== 'overlay' || !productConfig.configuration) throw new TypeError();
+    dto.product_config_verified = true;
+    const api = await bounded(loadApi, remaining(), now);
+    dto.import_ok = true;
+    stage = 2;
+    remaining(); // Check before scheduling any createHarness work.
+    // The cancellation signal also fences a createHarness that resolves after our deadline.
+    harness = await bounded(() => {
+      remaining();
+      const creation = Promise.resolve().then(() => {
+        remaining();
+        return api.createHarness({ configDir, productConfig, strictMcpConfig: true, signal: controller.signal });
+      });
+      creation.then(value => {
+        if (controller.signal.aborted && !harness) Promise.resolve().then(() => value.close()).catch(() => {});
+      }, () => {});
+      return creation;
+    }, remaining(), now);
+    if (!harness || typeof harness.close !== 'function' || typeof harness.closed?.then !== 'function') throw new TypeError();
+    // Observe rejection immediately; explicit bounded settlement below still determines success.
+    harness.closed.catch(() => {});
+    dto.harness_created = true;
+    stage = 3;
+    remaining();
+    client = api.createClient({ account: { mode: 'external' }, product: { mode: 'managed' },
+      capabilities: { elicitation: { form: {}, url: {} } } });
+    if (!client || typeof client.connect !== 'function' || typeof client.close !== 'function' || typeof client.on !== 'function') throw new TypeError();
+    dto.client_created = true;
+    // The pinned executor-backed MCP initialize contract requires both capabilities.
+    // No form/URL is opened, read or accepted. Any such request aborts this diagnostic.
+    client.on('elicitation/create', () => {
+      dto.elicitation_seen = 1;
+      controller.abort();
+      return { action: 'cancel' };
+    });
+    if (dto.elicitation_seen !== 0) throw new TypeError();
+    remaining();
+    stage = 4;
+    await bounded(() => client.connect(harness, { timeoutMs: remaining() }), remaining(), now);
+    dto.connect_returned = true;
+    remaining();
+    if (dto.elicitation_seen !== 0 || client.initialization?.protocolVersion !== 1) throw new TypeError();
+    dto.protocol_version = 1;
+    const methods = client.initialization.authMethods;
+    if (methods !== undefined && (!Array.isArray(methods) || methods.length !== 0)) throw new TypeError();
+    dto.auth_methods_empty = true; // None advertised; external Account hides the catalog.
+    dto.connected = true;
+    stage = 8;
+    if (typeof client.product?.read !== 'function') throw new TypeError();
+    const product = await bounded(() => client.product.read({}), remaining(), now);
+    dto.product_read_returned = true;
+    remaining();
+    if (dto.elicitation_seen !== 0 || product?.state !== 'ready' || product.mode !== 'managed') throw new TypeError();
+    dto.product_ready = true;
+    if (product.productName !== 'WorkBuddy' || product.applicationName !== 'WorkBuddy' || product.productVersion !== '5.9.3') throw new TypeError();
+    dto.product_identity_verified = true;
+  } catch (error) {
+    dto.failure_stage = error instanceof Deadline ? 7 : stage;
+    dto.error_class = classifyError(error);
+    dto.error_detail = classifyDetail(error);
+  } finally {
+    if (dto.failure_stage !== 0) controller.abort();
+    const cleanupEnd = now() + cleanupMs;
+    const closeStep = async (operation, flag, failure) => {
+      try {
+        // Invoke exactly once even if no wait budget remains. No microtask gate can
+        // accidentally suppress a required close request.
+        const pending = Promise.resolve(operation());
+        pending.catch(() => {});
+        const left = cleanupEnd - now();
+        if (left <= 0) throw new Deadline();
+        await bounded(() => pending, left, now);
+        if (now() >= cleanupEnd) throw new Deadline();
+        dto[flag] = true;
+      } catch (error) {
+        controller.abort();
+        if (dto.failure_stage === 0) {
+          dto.failure_stage = error instanceof Deadline ? 7 : failure;
+          dto.error_class = classifyError(error);
+          dto.error_detail = classifyDetail(error);
+        }
+      }
+    };
+    if (client) await closeStep(() => client.close(), 'client_closed', 5);
+    if (harness) {
+      await closeStep(() => harness.close(), 'harness_closed', 6);
+      await closeStep(() => harness.closed, 'harness_settled', 6);
+    }
+    dto.elapsed_ms = Math.min(120000, Math.max(0, Math.round(now() - start)));
+  }
+  if (dto.elicitation_seen !== 0 && dto.failure_stage === 0) {
+    dto.failure_stage = 4;
+    dto.error_class = 8;
+  }
+  dto.success = complete(dto);
+  return dto;
+}
+
+export function complete(dto) {
+  return dto.failure_stage === 0 && dto.error_class === 0 && dto.error_detail === 0 && dto.elicitation_seen === 0 && dto.protocol_version === 1 &&
+    ['product_config_verified', 'product_read_returned', 'product_ready', 'product_identity_verified', 'auth_methods_empty', 'entry_verified', 'import_ok', 'harness_created', 'client_created', 'connect_returned', 'connected', 'client_closed', 'harness_closed', 'harness_settled']
+      .every(key => dto[key] === true);
+}
+
+async function physical(value, directory, fs) {
+  if (!path.isAbsolute(value) || path.resolve(value) !== value) throw new TypeError();
+  for (let current = value;; current = path.dirname(current)) {
+    const info = await fs.lstat(current);
+    if (info.isSymbolicLink()) throw new TypeError();
+    if (current === value && (directory ? !info.isDirectory() : !info.isFile())) throw new TypeError();
+    if (path.dirname(current) === current) break;
+  }
+  if ((await fs.realpath(value)).toLowerCase() !== value.toLowerCase()) throw new TypeError();
+}
+function inside(root, value) {
+  const relative = path.relative(root, value);
+  if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) throw new TypeError();
+}
+
+async function verifyBytes(file, expectedHash, maximum, expectedSize, fs) {
+  const source = await fs.open(file, 'r');
+  try {
+    const hash = createHash('sha256');
+    const buffer = Buffer.alloc(1024 * 1024);
+    let total = 0;
+    for (;;) {
+      const { bytesRead } = await source.read(buffer, 0, buffer.length, null);
+      if (!bytesRead) break;
+      total += bytesRead;
+      if (total > maximum) throw new TypeError();
+      hash.update(buffer.subarray(0, bytesRead));
+    }
+    if ((expectedSize !== undefined && total !== expectedSize) || hash.digest('hex') !== expectedHash) throw new TypeError();
+  } finally { await source.close(); }
+}
+
+/** Physical bytes must never be read through Electron's ASAR virtual filesystem. */
+export async function verifyPhysicalFile(file, expectedHash, maximum, fs) {
+  await physical(file, false, fs);
+  const info = await fs.lstat(file);
+  if (info.nlink !== 1 || info.size > maximum) throw new TypeError();
+  await verifyBytes(file, expectedHash, maximum, info.size, fs);
+  return info.size;
+}
+
+/** Hash and parse the same bounded physical bytes; no second path read. */
+export async function loadPhysicalProduct(file, fs, expectedHash = PRODUCT_SHA) {
+  await physical(file, false, fs);
+  const info = await fs.lstat(file);
+  if (info.nlink !== 1 || info.size > 1024 * 1024) throw new TypeError();
+  const source = await fs.open(file, 'r');
+  let bytes;
+  try {
+    const opened = await source.stat();
+    if (!opened.isFile() || opened.nlink !== 1 || opened.size !== info.size || opened.dev !== info.dev || opened.ino !== info.ino) throw new TypeError();
+    const chunks = []; let total = 0;
+    for (;;) {
+      const buffer = Buffer.alloc(65536);
+      const { bytesRead } = await source.read(buffer, 0, buffer.length, null);
+      if (!bytesRead) break;
+      total += bytesRead;
+      if (total > 1024 * 1024) throw new TypeError();
+      chunks.push(buffer.subarray(0, bytesRead));
+    }
+    bytes = Buffer.concat(chunks);
+    if (total !== opened.size || createHash('sha256').update(bytes).digest('hex') !== expectedHash) throw new TypeError();
+  } finally { await source.close(); }
+  const configuration = JSON.parse(bytes.toString('utf8'));
+  if (!configuration || Array.isArray(configuration) || configuration.productName !== 'WorkBuddy' ||
+      configuration.applicationName !== 'WorkBuddy' || configuration.authentication?.id !== 'workbuddy-desktop' ||
+      configuration.authentication?.type !== 'account-scoped-external-link' ||
+      configuration.authentication?.attributes?.platform !== 'workbuddy') throw new TypeError();
+  for (const key of ['include', 'productConfigEnv', 'productConfigPathEnv', 'replacements', 'mergeStrategy']) delete configuration[key];
+  configuration.productVersion = '5.9.3';
+  return { schemaVersion: 1, kind: 'overlay', configuration };
+}
+
+export async function verifyVirtualFile(file, expectedHash, expectedSize, fs) {
+  await verifyBytes(file, expectedHash, 1024 * 1024, expectedSize, fs);
+}
+
+async function main(argv) {
+  let output;
+  try {
+    if (process.platform !== 'win32' || process.env.GITHUB_ACTIONS !== 'true' ||
+        process.env.RUNNER_ENVIRONMENT !== 'github-hosted') throw new TypeError();
+    if (argv.length !== 4 || argv[0] !== '--package-root' || argv[2] !== '--run-root') throw new TypeError();
+    // Official Electron builtin only: no package fallback, global noAsar switch,
+    // monkeypatch or reconstructed dependency tree. Node fixture imports stay inert.
+    if (process.versions.electron !== '37.10.3') throw new TypeError();
+    const require = createRequire(import.meta.url);
+    if (require.resolve('original-fs') !== 'original-fs') throw new TypeError();
+    const physicalFs = require('original-fs').promises;
+    const virtualFs = { open, lstat, realpath };
+    const packageRoot = argv[1], root = argv[3];
+    const home = path.join(root, 'isolated', 'home');
+    const config = path.join(root, 'isolated', 'config');
+    const temp = path.join(root, 'isolated', 'temp');
+    const appdata = path.join(root, 'isolated', 'appdata');
+    const localappdata = path.join(root, 'isolated', 'localappdata');
+    const dto = path.join(root, 'output', 'library-summary.json');
+    const resources = path.join(root, 'official', 'resources');
+    if (packageRoot !== path.join(resources, 'app.asar.unpacked', 'node_modules', '@genie', 'agent-harness')) throw new TypeError();
+    const archive = path.join(resources, 'app.asar');
+    const entry = path.join(packageRoot, 'lib', 'public.js');
+    const virtualEntry = path.join(archive, 'node_modules', '@genie', 'agent-harness', 'lib', 'public.js');
+    for (const value of [root, home, config, temp, appdata, localappdata, path.join(root, 'workspace'), path.dirname(dto)]) await physical(value, true, physicalFs);
+    for (const value of [home, config, temp, appdata, localappdata, dto, entry]) inside(root, value);
+    if (home !== path.join(root, 'isolated', 'home') || config !== path.join(root, 'isolated', 'config') ||
+        dto !== path.join(root, 'output', 'library-summary.json') ||
+        path.resolve(homedir()).toLowerCase() !== home.toLowerCase() ||
+        path.resolve(tmpdir()).toLowerCase() !== temp.toLowerCase() ||
+        process.env.USERPROFILE !== home || process.env.HOME !== home ||
+        process.env.TEMP !== temp || process.env.TMP !== temp ||
+        process.env.APPDATA !== appdata || process.env.LOCALAPPDATA !== localappdata ||
+        process.env.CODEBUDDY_CONFIG_DIR !== config || process.env.WORKBUDDY_CONFIG_DIR !== config ||
+        process.cwd() !== path.join(root, 'workspace')) throw new TypeError();
+    // Reserve after path/environment validation, before checks that differ between
+    // physical and virtual filesystems. Their caught failures now produce a DTO.
+    output = await physicalFs.open(dto, 'wx', 0o600);
+    const result = await runHandshake(() => import(pathToFileURL(virtualEntry).href), {
+      configDir: config,
+      loadProduct: () => loadPhysicalProduct(path.join(resources, 'app.asar.unpacked', 'cli', 'product.json'), physicalFs),
+      verifyEntry: async () => {
+        const entrySize = await verifyPhysicalFile(entry, PUBLIC_SHA, 1024*1024, physicalFs);
+        await verifyPhysicalFile(archive, ASAR_SHA, 1024**3, physicalFs);
+        // Only this virtual entry uses Electron's ASAR-aware filesystem.
+        await verifyVirtualFile(virtualEntry, PUBLIC_SHA, entrySize, virtualFs);
+      }
+    });
+    await output.writeFile(JSON.stringify(result) + '\n');
+    await output.sync();
+    process.exitCode = complete(result) ? 0 : 1;
+  } catch {
+    process.exitCode = 1; // No arbitrary exception strings or paths leave this process.
+  } finally { if (output) await output.close().catch(() => { process.exitCode = 1; }); }
+}
+
+if (process.argv[1] && pathToFileURL(path.resolve(process.argv[1])).href === import.meta.url) {
+  await main(process.argv.slice(2));
+}

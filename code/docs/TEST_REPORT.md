@@ -1,3 +1,5 @@
+> Historical P1a report for commit `5f1bfd6611a3d3ebe0f6dbb2f2c56ee303931deb`. Its manifest is now archived as `code/audit/p1a-source-manifest.sha256`; it is not a checksum of the current P1b working tree. See [P1b report](P1B_TEST_REPORT.md) for current results.
+
 # P1a 测试报告
 
 运行时间（UTC）：2026-11-07T15:45:39.089598+00:00
