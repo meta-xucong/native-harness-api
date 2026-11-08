@@ -90,12 +90,18 @@ class LiveEventTests(unittest.TestCase):
         r.update(update()); r.update(update())
         self.assertEqual(len(events), 1); self.assertEqual(r.fault, 'OVERFLOW')
 
-    def test_repeated_full_snapshots_bounded_separately(self):
-        events = []; r = self.reducer(events.append); ack(r)
+    def test_replaceable_snapshots_are_not_charged_as_actual_wire(self):
+        observed_bytes = [0]; latest = {}
+        def sink(value):
+            observed_bytes[0] += len(json.dumps(value, separators=(',', ':')).encode())
+            latest.clear(); latest.update(value)
+        r = self.reducer(sink); ack(r)
         r.update(update(text='x' * 100000))
         for _ in range(180): r.update(update(text='a'))
-        self.assertEqual(r.fault, 'EVENT_SINK_OVERFLOW')
-        self.assertLessEqual(sum(len(json.dumps(e, separators=(',', ':')).encode()) for e in events), 16*1024*1024)
+        self.assertIsNone(r.fault)
+        self.assertGreater(observed_bytes[0], 16*1024*1024)
+        self.assertEqual(latest['text'], 'x'*100000+'a'*180)
+        # The caller's bounded coalescing pump owns actual transmitted-wire quota.
 
     def test_invalid_or_conflicting_terminal_is_not_published(self):
         events = []; r = self.reducer(events.append); ack(r); r.update(update())

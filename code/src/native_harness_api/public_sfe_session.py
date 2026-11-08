@@ -100,14 +100,15 @@ class PublicSfeSession:
     Returned tuples contain encoded NDJSON frames. Account identity is discarded.
     Session methods are explicit so the owner can persist each intent first.
     """
-    def __init__(self, *, deadline, expected_account_digest, clock=time.monotonic, max_frames=1024,
+    def __init__(self, *, deadline, expected_account_digest, clock=time.monotonic, max_frames=4096,
                  max_bytes=4 * 1024 * 1024, on_event=None):
         check(type(max_frames) is int and 0 < max_frames <= 4096)
         check(type(max_bytes) is int and 0 < max_bytes <= 4 * 1024 * 1024)
         check(type(expected_account_digest) is str and re.fullmatch(r'[0-9a-f]{64}', expected_account_digest) is not None)
         self.expected_account_digest = expected_account_digest
-        self.coordinator = SessionCoordinator(deadline=deadline, clock=clock, on_event=on_event)
-        self.projector = Beta16EventProjector()
+        self.coordinator = SessionCoordinator(deadline=deadline, clock=clock, on_event=on_event,
+                                              reducer_max_events=max_frames, reducer_max_bytes=max_bytes)
+        self.projector = Beta16EventProjector(max_events=max_frames, max_bytes=max_bytes)
         self.max_frames, self.max_bytes = max_frames, max_bytes
         self.frames_received = self.bytes_received = self.frames_sent = 0
         self.failure_code = None

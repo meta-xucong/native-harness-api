@@ -48,13 +48,24 @@ class PublicSfeOwnedSession:
         record['thread'].start()
         record['started'] = True
 
+    def _enqueue_frame(self, frame):
+        # Bounded pipe backpressure, not dropped valid frames. The orchestration
+        # deadline still governs the attempt; closing releases a full-queue wait.
+        while not self._closing:
+            try:
+                self._frames.put(frame, timeout=.02)
+                return True
+            except queue.Full:
+                continue
+        return False
+
     def _read(self, stream, stderr=False):
         try:
             while True:
                 data = stream.read(4096) if stderr else stream.readline(self.MAX_FRAME + 2)
                 if not data:
                     if not stderr:
-                        self._frames.put_nowait(None)
+                        self._enqueue_frame(None)
                     else:
                         self.stderr_eof = True
                     return
@@ -71,7 +82,8 @@ class PublicSfeOwnedSession:
                 if len(data) > self.MAX_FRAME + 1 or not data.endswith(b'\n'):
                     self._io_fail('FRAME_LIMIT')
                     return
-                self._frames.put_nowait(data[:-1])
+                if not self._enqueue_frame(data[:-1]):
+                    return
         except queue.Full:
             self._io_fail('OUTPUT_LIMIT')
         except Exception:

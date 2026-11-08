@@ -134,7 +134,8 @@ class SessionReducer:
         self._buffer=[];self._events=0;self._bytes=0;self._messages={};self._terminal=False
         self._error_seen=False
         check(on_event is None or callable(on_event))
-        self._on_event=on_event;self._emitted_bytes=0;self._emitted_events=0
+        self._on_event=on_event;self._emitted_events=0
+        self._text_bytes=0
         self._emitting=False
 
     def _emit(self, event):
@@ -147,9 +148,11 @@ class SessionReducer:
         if self._on_event is None or self.fault:return
         try:
             check(not self._emitting)
-            event,size=snapshot(event,6*262144+4096)
-            self._emitted_bytes+=size;self._emitted_events+=1
-            if self._emitted_bytes>16*1024*1024 or self._emitted_events>self.max_events:
+            event,_=snapshot(event,6*262144+4096)
+            self._emitted_events+=1
+            # Snapshots are replaceable observations, not yet wire transmissions.
+            # The bounded coalescing sink charges its actual serialized output.
+            if self._emitted_events>self.max_events:
                 self._fail('EVENT_SINK_OVERFLOW');return
             self._emitting=True
             result=self._on_event(event)
@@ -159,6 +162,14 @@ class SessionReducer:
         except Exception:self._fail('EVENT_SINK_FAILED')
         finally:self._emitting=False
 
+
+    def _set_message(self, mid, value):
+        # Input accounting includes metadata/replacements; final logical text has
+        # a separate UTF-8 limit that larger source-wire budgets cannot enlarge.
+        size=self._text_bytes-len(self._messages.get(mid,'').encode('utf8'))+len(value.encode('utf8'))
+        if size>262144:
+            self._fail('TEXT_OVERFLOW');return
+        self._messages[mid]=value;self._text_bytes=size
 
     def _fail(self, code):
         if self.fault is None:self.fault=code
@@ -198,7 +209,7 @@ class SessionReducer:
         self.tick(self.clock())
         if self.fault:return
         try:
-            envelope,size=snapshot(envelope,self.max_bytes)
+            envelope,size=snapshot(envelope,min(self.max_bytes,262144))
             self._bytes+=size;self._events+=1
             if self._bytes>self.max_bytes or self._events>self.max_events:
                 self._fail('OVERFLOW');return
@@ -225,7 +236,7 @@ class SessionReducer:
             content=update.get('content');check(type(content) is dict)
             if content.get('type')=='text':
                 value=content.get('text');check(type(value) is str)
-                self._messages[mid]=self._messages.get(mid,'')+value
+                self._set_message(mid,self._messages.get(mid,'')+value)
                 self._emit({'type':'text_snapshot','text':''.join(self._messages.values())})
             else:self._fail('UNSUPPORTED_CONTENT')
         elif kind=='agent_message':
@@ -238,7 +249,7 @@ class SessionReducer:
                 for content in contents:
                     check(type(content) is dict and content.get('type')=='text' and type(content.get('text')) is str)
                     parts.append(content['text'])
-                self._messages[mid]=''.join(parts)
+                self._set_message(mid,''.join(parts))
                 self._emit({'type':'text_snapshot','text':''.join(self._messages.values())})
         elif kind==ERROR_UPDATE:
             check(not self._terminal)

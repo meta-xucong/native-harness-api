@@ -6,7 +6,9 @@ restarts occur. Delivery failure makes the attempt uncertain even after native
 cleanup. Callers retain unfinished workers and never release that attempt slot.
 """
 import json
-import queue
+from collections import deque
+import math
+import time
 import threading
 
 MAX_EVENTS = 512
@@ -35,51 +37,94 @@ def checked_event(event):
 
 
 class LiveEventPump:
-    """Single producer and publisher worker; enqueue and finish waits are bounded."""
-    def __init__(self, publish):
+    """Bounded latest-snapshot coalescing; status events are ordering barriers.
+
+    Sequence numbers and quota are assigned only when a worker takes an event for
+    publication. An unsent consecutive snapshot may be replaced, never a status
+    or an event already sent. Native state/final close flush preceding text.
+    """
+    def __init__(self, publish, *, horizon=120):
         if not callable(publish):
             raise ValueError('LIVE_PUBLISHER_REQUIRED')
+        if type(horizon) not in (int, float) or not math.isfinite(horizon) or not 0 < horizon <= 3600:
+            raise ValueError('LIVE_HORIZON_INVALID')
         self.publish = publish
-        self.queue = queue.Queue(maxsize=64)
+        self.queue = deque()
+        self.condition = threading.Condition()
         self.failed = threading.Event()
         self.closed = threading.Event()
-        self.count = self.bytes = self.accepted = 0
+        self.count = self.bytes = self.accepted = self.received = self.coalesced = 0
+        # Reserve capacity for boundary/final snapshots and finite state updates.
+        # This is pacing, not permission to exceed the hard publication quotas.
+        self.byte_rate = (MAX_BYTES - 2 * MAX_EVENT_BYTES - 65536) / horizon
+        self.event_rate = (MAX_EVENTS - 66) / horizon
+        self.next_snapshot = time.monotonic() + .1
         self.thread = threading.Thread(target=self._work, daemon=True, name='native-live-events')
         self.thread.start()
 
     def enqueue(self, event):
-        if self.failed.is_set() or self.closed.is_set():
-            return False
         try:
             event, size = checked_event(event)
-            if self.count >= MAX_EVENTS or self.bytes + size > MAX_BYTES:
-                raise ValueError()
-            seq = self.count + 1
-            self.queue.put_nowait((seq, event))
-            self.count, self.bytes = seq, self.bytes + size
-            return True
+            with self.condition:
+                if self.failed.is_set() or self.closed.is_set():
+                    return False
+                if self.received >= 4096 or self.count >= MAX_EVENTS or self.bytes >= MAX_BYTES:
+                    raise ValueError()
+                if self.queue and event['type'] == self.queue[-1][0]['type'] == 'text_snapshot':
+                    self.queue[-1] = (event, size)
+                    self.coalesced += 1
+                else:
+                    if len(self.queue) >= 64:
+                        raise ValueError()
+                    self.queue.append((event, size))
+                self.received += 1
+                self.condition.notify_all()
+                return True
         except Exception:
             self.failed.set()
+            with self.condition:
+                self.condition.notify_all()
             return False
 
     def _work(self):
         try:
-            while not self.failed.is_set():
-                try:
-                    seq, event = self.queue.get(timeout=.02)
-                except queue.Empty:
-                    if self.closed.is_set() and self.queue.empty():
-                        return
-                    continue
+            while True:
+                with self.condition:
+                    while True:
+                        if self.failed.is_set():
+                            return
+                        if not self.queue:
+                            if self.closed.is_set():
+                                return
+                            self.condition.wait(.02)
+                            continue
+                        event, size = self.queue[0]
+                        delay = self.next_snapshot - time.monotonic()
+                        # A state barrier or final flush must not overtake text.
+                        if (event['type'] == 'text_snapshot' and len(self.queue) == 1
+                                and not self.closed.is_set() and delay > 0):
+                            self.condition.wait(min(delay, .1))
+                            continue
+                        if self.count >= MAX_EVENTS or self.bytes + size > MAX_BYTES:
+                            raise ValueError()
+                        self.queue.popleft()
+                        self.count += 1
+                        self.bytes += size
+                        seq = self.count
+                        break
                 if self.publish(seq, event) is not True:
                     raise ValueError()
                 self.accepted = seq
+                if event['type'] == 'text_snapshot':
+                    self.next_snapshot = time.monotonic() + min(1., max(.1, size / self.byte_rate, 1 / self.event_rate))
         except Exception:
             self.failed.set()
 
     def finish(self, timeout=6):
-        self.closed.set()
+        with self.condition:
+            self.closed.set()
+            self.condition.notify_all()
         self.thread.join(timeout)
-        if self.thread.is_alive() or self.accepted != self.count:
+        if self.thread.is_alive() or self.accepted != self.count or self.queue:
             self.failed.set()
         return not self.failed.is_set()

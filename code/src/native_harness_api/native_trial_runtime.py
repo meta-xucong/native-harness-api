@@ -106,7 +106,7 @@ class NativeTrialConfig(RuntimeConfig):
             profile.verify()
         client = NodeClient(self.bridge_url, self.credential(self.node_token_env, environ))
         policy = NodePolicy(self.source, self.ledger_instance, frozenset({self.owner}), self.configured_bindings, mode='workbuddy_local_trial')
-        adapter = PublicSfeAdapter(evidence_root, bindings=self.configured_bindings, invoke=self.invoke)
+        adapter = PublicSfeAdapter(evidence_root, bindings=self.configured_bindings, invoke=self.invoke, event_horizon=self.execution_timeout)
         return Runner(client, journal, adapter, policy=policy)
 
     def invoke(self, *, model_id, messages, on_event=None, cancellation=None):

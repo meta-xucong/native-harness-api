@@ -68,7 +68,8 @@ for line in sys.stdin:
             sys.stderr.write('PRIVATE' * 12000); sys.stderr.flush()
         emit({'method': 'session/update', 'params': {'sessionId': SESSION, 'update': {'sessionUpdate': 'usage_update', 'used': 0, 'size': 100}}})
         if MODE != 'ack_only':
-            update('agent_message_chunk', messageId='synthetic-answer', content={'type': 'text', 'text': 'synthetic answer'})
+            for _ in range(4000 if MODE == 'long_burst' else 1):
+                update('agent_message_chunk', messageId='synthetic-answer', content={'type': 'text', 'text': 'x'*16 if MODE == 'long_burst' else 'synthetic answer'})
             update('state_update', state='idle', stopReason='end_turn')
         result = {'messageId': 'synthetic-input', '_meta': META}
     elif method == 'session/cancel':

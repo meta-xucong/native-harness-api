@@ -62,7 +62,7 @@ class PublicSfeAdapter:
     synthetic = False
     supports_live_events = True
 
-    def __init__(self, root, *, binding=None, bindings=None, invoke):
+    def __init__(self, root, *, binding=None, bindings=None, invoke, event_horizon=120):
         if (binding is None) == (bindings is None):
             raise ValueError('Explicit binding or bindings required')
         approved = (binding,) if bindings is None else bindings
@@ -78,6 +78,7 @@ class PublicSfeAdapter:
         self._check_storage()
         self.bindings, self.invoke = approved, invoke
         self._retained_event_pumps = []
+        self.event_horizon = event_horizon
         with self._connect() as con:
             con.execute('CREATE TABLE IF NOT EXISTS evidence (grant_id TEXT PRIMARY KEY, task_id TEXT UNIQUE NOT NULL, request_hash TEXT NOT NULL, result TEXT)')
 
@@ -135,7 +136,7 @@ class PublicSfeAdapter:
         pump = None
         try:
             if publish_event is not None:
-                pump = LiveEventPump(publish_event)
+                pump = LiveEventPump(publish_event, horizon=self.event_horizon)
                 self._retained_event_pumps.append(pump)
             model = task['request']['binding']['native_model']
             options = {} if pump is None else {'on_event': pump.enqueue, 'cancellation': pump.failed}

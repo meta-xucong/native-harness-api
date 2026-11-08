@@ -42,10 +42,14 @@ class SessionCoordinator:
     transport must persist its execution intent before sending any command, enforce
     native readiness/authorization, and retain process ownership independently.
     """
-    def __init__(self, *, deadline, clock=time.monotonic, on_event=None):
+    def __init__(self, *, deadline, clock=time.monotonic, on_event=None,
+                 reducer_max_events=256, reducer_max_bytes=262144):
         check(type(deadline) in (int, float) and math.isfinite(deadline))
         check(callable(clock))
         check(on_event is None or callable(on_event))
+        check(type(reducer_max_events) is int and 0 < reducer_max_events <= 4096)
+        check(type(reducer_max_bytes) is int and 0 < reducer_max_bytes <= 4*1024*1024)
+        self._reducer_max_events, self._reducer_max_bytes = reducer_max_events, reducer_max_bytes
         self._on_event = on_event
         self.deadline, self.clock = deadline, clock
         self.phase = 'new'
@@ -131,6 +135,7 @@ class SessionCoordinator:
             # Bind the reducer before emitting the command: native events may
             # arrive before the insertion-acknowledgement RPC response.
             self.reducer = SessionReducer(self.session_id, deadline=self.deadline,
+                                          max_events=self._reducer_max_events, max_bytes=self._reducer_max_bytes,
                                           # Use the validated sample for this
                                           # serialized entry; do not call an
                                           # arbitrary clock twice mid-dispatch.

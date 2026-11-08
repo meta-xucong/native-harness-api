@@ -1,8 +1,8 @@
 import copy
-import queue
 from pathlib import Path
 import tempfile
 import threading
+import time
 import unittest
 from unittest.mock import Mock
 from native_harness_api.native_live_events import LiveEventPump, checked_event
@@ -18,7 +18,8 @@ class LiveEventsTests(unittest.TestCase):
         for text in ('abc', 'ab', ''):
             self.assertTrue(pump.enqueue({'type':'text_snapshot', 'text':text}))
         self.assertTrue(pump.finish())
-        self.assertEqual(events, [(n+1, {'type':'text_snapshot','text':v}) for n,v in enumerate(('abc','ab',''))])
+        self.assertEqual(events[-1][1], {'type':'text_snapshot','text':''})
+        self.assertEqual([seq for seq,_ in events], list(range(1,len(events)+1)))
 
     def test_payload_copy(self):
         seen=[];e={'type':'text_snapshot','text':'old'}
@@ -51,23 +52,59 @@ class LiveEventsTests(unittest.TestCase):
         pump=LiveEventPump(publish);pump.enqueue({'type':'native_status','state':'running'});self.assertTrue(entered.wait(1))
         self.assertFalse(pump.finish(.001));self.assertTrue(pump.thread.is_alive());release.set();pump.thread.join(1)
 
-    def test_close_race_does_not_drop_last_queued_event(self):
-        pump=LiveEventPump.__new__(LiveEventPump)
-        pump.failed=threading.Event();pump.closed=threading.Event()
-        pump.accepted=0;seen=[]
-        pump.publish=lambda seq,event: seen.append(seq) or True
-        class RaceQueue:
-            first=True
-            pending=True
-            def get(self, timeout):
-                if self.first:
-                    self.first=False;pump.closed.set();raise queue.Empty()
-                if self.pending:
-                    self.pending=False;return (1,{'type':'native_status','state':'running'})
-                raise queue.Empty()
-            def empty(self):return not self.pending
-        pump.queue=RaceQueue();pump._work()
-        self.assertEqual(seen,[1]);self.assertEqual(pump.accepted,1)
+    def test_close_flushes_latest_queued_event(self):
+        seen=[];pump=LiveEventPump(lambda seq,event: seen.append((seq,event)) or True)
+        pump.next_snapshot=10**15
+        self.assertTrue(pump.enqueue({'type':'text_snapshot','text':'last'}))
+        self.assertTrue(pump.finish())
+        self.assertEqual(seen,[(1,{'type':'text_snapshot','text':'last'})])
+
+    def test_status_barriers_keep_order_while_snapshots_coalesce(self):
+        seen=[];entered=threading.Event();release=threading.Event()
+        def publish(seq,event):
+            if seq==1:entered.set();release.wait(2)
+            seen.append((seq,event));return True
+        pump=LiveEventPump(publish)
+        pump.enqueue({'type':'native_status','state':'running'});self.assertTrue(entered.wait(1))
+        for text in ('a','ab','abc'):pump.enqueue({'type':'text_snapshot','text':text})
+        pump.enqueue({'type':'native_status','state':'requires_action'})
+        for text in ('ab',''):pump.enqueue({'type':'text_snapshot','text':text})
+        pump.enqueue({'type':'native_status','state':'idle','stop_reason':'end_turn'})
+        release.set();self.assertTrue(pump.finish())
+        self.assertEqual([event for _,event in seen],[
+            {'type':'native_status','state':'running'}, {'type':'text_snapshot','text':'abc'},
+            {'type':'native_status','state':'requires_action'}, {'type':'text_snapshot','text':''},
+            {'type':'native_status','state':'idle','stop_reason':'end_turn'}])
+        self.assertEqual([seq for seq,_ in seen],[1,2,3,4,5])
+
+    def test_4000_callbacks_with_slow_publisher_keep_full_latest_text(self):
+        seen=[];entered=threading.Event();release=threading.Event()
+        def publish(seq,event):
+            if seq==1:
+                entered.set()
+                if not release.wait(60):raise RuntimeError('SYNTHETIC_BARRIER_TIMEOUT')
+            seen.append((seq,event));return True
+        pump=LiveEventPump(publish)
+        pump.enqueue({'type':'native_status','state':'running'});self.assertTrue(entered.wait(1))
+        text=''
+        try:
+            for _ in range(4000):
+                text+='x'*64
+                self.assertTrue(pump.enqueue({'type':'text_snapshot','text':text}))
+            self.assertEqual(len(pump.queue),1)
+        finally:
+            release.set()
+        self.assertTrue(pump.finish())
+        self.assertEqual(seen[-1][1]['text'],text)
+        self.assertLessEqual(pump.count,3)
+        self.assertLess(pump.bytes,300000)
+
+    def test_pacing_retains_but_does_not_publish_quota_every_callback(self):
+        seen=[];pump=LiveEventPump(lambda seq,event:seen.append(event) or True,horizon=3600)
+        pump.next_snapshot=10**15
+        for i in range(100):self.assertTrue(pump.enqueue({'type':'text_snapshot','text':str(i)}))
+        self.assertEqual(pump.count,0);self.assertEqual(pump.bytes,0)
+        self.assertTrue(pump.finish());self.assertEqual(seen,[{'type':'text_snapshot','text':'99'}])
 
     def test_count_and_bytes_budgets(self):
         for field,value in (('count',512),('bytes',16*1024*1024)):
@@ -124,3 +161,97 @@ class LiveEventsTests(unittest.TestCase):
             self.assertEqual(client.starts,1)
             self.assertEqual(runner.run_once()['outcome'],'idle')
             self.assertEqual(client.event.call_count,1)
+
+    def test_running_pump_delivers_intermediate_without_finish_even_long_horizon(self):
+        seen=[];first=threading.Event();second=threading.Event()
+        def publish(seq,event):
+            seen.append((time.monotonic(),event))
+            (first if seq==1 else second).set()
+            return True
+        pump=LiveEventPump(publish,horizon=3600)
+        before=time.monotonic();pump.enqueue({'type':'text_snapshot','text':'first'})
+        self.assertTrue(first.wait(1.5),'first snapshot withheld until finish')
+        pump.enqueue({'type':'text_snapshot','text':'second'})
+        self.assertTrue(second.wait(2),'intermediate snapshot delayed by long horizon')
+        self.assertFalse(pump.closed.is_set())
+        self.assertEqual(seen[-1][1]['text'],'second')
+        self.assertLess(seen[-1][0]-seen[0][0],2)
+        self.assertTrue(pump.finish())
+
+    def test_public_protocol_4000_chunks_coalesce_without_losing_final_text(self):
+        from test_public_sfe_long_events import LongSourceEventTests
+        from test_public_sfe_session import unpack, response, event, terminal
+        from test_public_sfe_live_events import update
+        from native_harness_api.beta15_reducer import REQUEST_ID
+        seen=[];pump=LiveEventPump(lambda seq,value: seen.append((seq,value)) or True)
+        try:
+            protocol=LongSourceEventTests().selected(pump.enqueue)
+            req=unpack(protocol.prompt('synthetic'))[0]
+            response(protocol,req,{'messageId':'input','_meta':{REQUEST_ID:'run'}})
+            for _ in range(4000):event(protocol,update(text='x'*32)['update'])
+            event(protocol,terminal())
+            self.assertEqual(protocol.evidence()['outcome'],'succeeded')
+            self.assertEqual(protocol.evidence()['turn']['text'],'x'*128000)
+        finally:
+            flushed=pump.finish()
+        self.assertTrue(flushed)
+        snapshots=[value for _,value in seen if value['type']=='text_snapshot']
+        self.assertEqual(snapshots[-1]['text'],'x'*128000)
+        self.assertEqual(seen[-1][1],{'type':'native_status','state':'idle','stop_reason':'end_turn'})
+        self.assertLess(pump.count,512);self.assertLess(pump.bytes,16*1024*1024)
+
+    def test_owned_reader_applies_bounded_backpressure_to_valid_burst(self):
+        import io
+        from native_harness_api.public_sfe_owned_session import PublicSfeOwnedSession
+        engine=PublicSfeOwnedSession(object())
+        thread=threading.Thread(target=engine._read,args=(io.BytesIO(b'{}\n'*1000),),daemon=True)
+        thread.start()
+        try:
+            deadline=time.monotonic()+2
+            while engine._frames.qsize()<512 and time.monotonic()<deadline:time.sleep(.001)
+            self.assertEqual(engine._frames.qsize(),512)
+            self.assertIsNone(engine._io_fault)
+            values=[]
+            for _ in range(1001):values.append(engine._frames.get(timeout=2))
+            thread.join(2)
+            self.assertFalse(thread.is_alive());self.assertIsNone(engine._io_fault)
+            self.assertEqual(values[:-1],[b'{}']*1000);self.assertIsNone(values[-1])
+            self.assertLessEqual(engine._frames.maxsize,512)
+        finally:
+            engine._closing=True;thread.join(2)
+
+    def test_owned_reader_full_queue_close_is_bounded(self):
+        import io
+        from native_harness_api.public_sfe_owned_session import PublicSfeOwnedSession
+        engine=PublicSfeOwnedSession(object())
+        for _ in range(512):engine._frames.put_nowait(b'old')
+        thread=threading.Thread(target=engine._read,args=(io.BytesIO(b'new\n'),),daemon=True)
+        thread.start();engine._closing=True;thread.join(2)
+        self.assertFalse(thread.is_alive());self.assertLessEqual(engine._frames.qsize(),512)
+
+    def test_owned_self_authored_fast_burst_with_slow_dispatch(self):
+        import os
+        import sys
+        from test_public_sfe_owned_session import CHILD, SyntheticTransport, digest
+        from native_harness_api.public_sfe_owned_session import PublicSfeOwnedSession
+        from native_harness_api.supervised_acp_transport import SupervisedACPTransport
+        class SlowDispatch(PublicSfeOwnedSession):
+            def _dispatch(self, raw):
+                time.sleep(.0003)
+                return super()._dispatch(raw)
+        seen=[];pump=LiveEventPump(lambda seq,event: seen.append((seq,event)) or True)
+        with tempfile.TemporaryDirectory() as root:
+            path=Path(root).resolve();engine=SlowDispatch(SupervisedACPTransport() if os.name=='nt' else SyntheticTransport())
+            env={k:v for k,v in os.environ.items() if k.upper() in ('PATH','SYSTEMROOT','WINDIR','TEMP','TMP','COMSPEC')}
+            env['SFE_FIXTURE_MODE']='long_burst'
+            try:
+                result=engine.run([sys.executable,'-u',str(CHILD.resolve())],path,env,
+                    workspace=str(path),model_id='synthetic-b',prompt='synthetic',
+                    expected_account_digest=digest(),timeout=45,cleanup_timeout=5,on_event=pump.enqueue)
+            finally:
+                flushed=pump.finish()
+            self.assertTrue(flushed);self.assertEqual(result['outcome'],'succeeded',result)
+            self.assertTrue(result['cleanup_confirmed'])
+            snapshots=[event for _,event in seen if event['type']=='text_snapshot']
+            self.assertEqual(snapshots[-1]['text'],'x'*64000)
+            self.assertIsNone(engine._io_fault)
