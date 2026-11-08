@@ -45,7 +45,8 @@ def sources(code, revision, harness='workbuddy'):
                      ('code/packaging/CODEX-NOTICE.txt', 'licenses/codex/NOTICE')]
     selected += [('code/docs/DEPLOYMENT_CHAIN.zh-CN.md','DEPLOYMENT_CHAIN.zh-CN.md'),
                  ('code/docs/NATIVE_EVENT_STREAM.md','NATIVE_EVENT_STREAM.md'),
-                 ('code/docs/MULTI-HARNESS-CONFIG.md','MULTI-HARNESS-CONFIG.md')]
+                 ('code/docs/MULTI-HARNESS-CONFIG.md','MULTI-HARNESS-CONFIG.md'),
+                 ('code/docs/OPENAI_PROVIDER.md','OPENAI_PROVIDER.md')]
     required = ['code/packaging/build_client.py','code/packaging/build.py']
     for path in [p for p,_ in selected]+required:
         if read_regular(root/path) != git('show',revision+':'+path):

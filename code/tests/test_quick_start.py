@@ -60,6 +60,14 @@ class QuickStartTests(unittest.TestCase):
             self.assertEqual(q.main(self.root, []), 0)
         setup.assert_not_called(); self.assertEqual(run.call_args.args[0], folder / 'windows-node.json')
 
+    def test_interrupted_provider_plan_restores_without_legacy_gateway_file(self):
+        folder = self.root / 'connection'; folder.mkdir()
+        for name in ('windows-node.json', 'bridge.json', 'facade.json', 'openai-provider.json', 'deployment-identities.json'):
+            (folder / name).write_text('{}')
+        with patch.object(q, 'load_node', return_value=self.config), patch.object(q, 'start_node', return_value=0) as run, patch.object(q, 'setup') as setup:
+            self.assertEqual(q.main(self.root, []), 0)
+        setup.assert_not_called(); self.assertEqual(run.call_args.args[0], folder / 'windows-node.json')
+
     def test_partial_plan_never_regenerates(self):
         (self.root / 'connection').mkdir()
         with patch.object(q, 'setup') as setup, patch.object(q, 'start_node') as run: self.assertEqual(q.main(self.root, []), 1)
@@ -108,9 +116,10 @@ class QuickStartTests(unittest.TestCase):
     def test_new_setup_writes_once_never_starts_node(self):
         profile = self.root / 'profile'
         def write(output, plan): output.mkdir(); (output / 'windows-node.json').write_text('{}')
-        with patch.object(q, 'choose_profile', return_value=profile), patch.object(q, 'discover_target', return_value={'target': 1}) as discover, patch.object(deployment, 'build_plan', return_value={'plan': 1}) as build, patch.object(deployment, 'write_plan', side_effect=write) as write_plan, patch.object(q, 'load_node', return_value=self.config), patch.object(q, 'start_node') as run, patch('builtins.input', side_effect=['', 'https://bridge.example', '7', '9', '/var/lib/bridge']): self.assertEqual(q.main(self.root, []), 0)
+        with patch.object(q, 'choose_profile', return_value=profile), patch.object(q, 'discover_target', return_value={'target': 1}) as discover, patch.object(deployment, 'build_plan', return_value={'plan': 1}) as build, patch.object(deployment, 'write_plan', side_effect=write) as write_plan, patch.object(q, 'load_node', return_value=self.config), patch.object(q, 'start_node') as run, patch('builtins.input', side_effect=['', 'https://bridge.example', '/var/lib/bridge']): self.assertEqual(q.main(self.root, []), 0)
         discover.assert_called_once(); build.assert_called_once(); write_plan.assert_called_once(); run.assert_not_called()
         spec = build.call_args.args[0]; self.assertEqual(spec['windows_data_dir'], str(profile / 'control')); self.assertEqual(spec['targets'], [{'target': 1}])
+        self.assertEqual(spec['ingress'], 'openai'); self.assertNotIn('user_id', spec); self.assertNotIn('api_key_id', spec)
 
     def test_prompted_token_process_only_removed_after_failure(self):
         secret = 'fixture-not-real-secret'
@@ -137,7 +146,7 @@ class QuickStartTests(unittest.TestCase):
         profile = self.profile()
         result = {'success': True, 'cleanup_confirmed': True, 'profile_restored': True,
                   'profile_closed': True, 'catalog': {'models': [{'id': 'native-fixture', 'name': 'Fixture'}]}}
-        with patch.object(assets, 'verify_runtime_assets', return_value={}), patch.object(storage, 'open_profile', return_value=profile), patch.object(models, 'discover_models', return_value=result), patch.object(q, 'start_node') as run, patch('builtins.input', side_effect=['', str(profile.root), '1', '', 'https://bridge.example.com', '7', '9', '/var/lib/native-bridge']):
+        with patch.object(assets, 'verify_runtime_assets', return_value={}), patch.object(storage, 'open_profile', return_value=profile), patch.object(models, 'discover_models', return_value=result), patch.object(q, 'start_node') as run, patch('builtins.input', side_effect=['', str(profile.root), '1', '', 'https://bridge.example.com', '/var/lib/native-bridge']):
             self.assertEqual(q.main(self.root, []), 0)
         run.assert_not_called()
         path = self.root / 'connection' / 'windows-node.json'

@@ -1,0 +1,55 @@
+name: Native OpenAI provider synthetic upstream seam
+on:
+  pull_request:
+    paths: ['code/**', '.github/workflows/native-provider.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  upstream-seam:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          path: native
+          persist-credentials: false
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          repository: Wei-Shaw/sub2api
+          ref: 6b4b37db43443b5e88e424fe3c69602cc3810dfb
+          path: upstream
+          persist-credentials: false
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          repository: meta-xucong/alchemy-render-bridge
+          ref: 52dc083207a8a02dfc14fe2ec1ea10f0cc0a54a8
+          path: bridge
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.13.17'
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16
+        with:
+          go-version: '1.27.3'
+          cache-dependency-path: upstream/backend/go.sum
+      - name: Install pinned Bridge dependencies only
+        run: python -m pip install fastapi==0.141.1 anyio==4.15.1 pydantic==2.13.4 Pillow==12.3.0 httpx==0.28.1 uvicorn==0.41.0
+      - name: Native Python regression and compile check
+        working-directory: native/code
+        env:
+          PYTHONPATH: src
+        run: |
+          python -m unittest discover -s tests
+          python -m compileall -q src integration
+          PYTHONPATH=src:. python examples/offline_demo.py
+      - name: Real Bridge HTTP provider and legacy regressions
+        working-directory: native/code
+        env:
+          PYTHONPATH: src:integration:tests:../../bridge/src
+        run: python -m unittest test_openai_provider_bridge test_real_bridge test_multi_harness_bridge -v
+      - name: Original Sub2API forwarder to real HTTP synthetic chain
+        env:
+          PYTHONPATH: native/code/src:native/code/integration:bridge/src
+        run: python native/code/integration/run_native_provider_chain.py --upstream upstream --bridge bridge
