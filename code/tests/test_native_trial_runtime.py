@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 from native_harness_api.runtime import RuntimeConfig
-from native_harness_api.native_trial_runtime import NativeTrialConfig, _QUARANTINED_PROFILES
+from native_harness_api.native_trial_runtime import NativeTrialConfig, _QUARANTINED_PROFILES, _QUARANTINED_ENGINES, hold_retained
 
 class Profile:
  def __init__(self,root):self.root=root;self.state='authenticated_confirmed';self.expected_account_digest='a'*64;self.calls=[]
@@ -23,7 +23,7 @@ class NativeRuntimeTests(unittest.TestCase):
   self.value={'mode':'workbuddy_local_trial','adapter':'public_sfe','source':'s','ledger_instance':'l','bridge_url':'http://127.0.0.1:8791','binding':{'binding_id':'b','revision':1,'model_alias':'workbuddy-test','native_model':'model'},'owner':['u','k'],'profile_root':str(self.root),'assets_root':str(self.root/'assets')}
   self.config=NativeTrialConfig.from_value(self.value);self.profile=Profile(self.root)
   self.assets={'executable':self.root/'assets/sfe.exe','host_node':self.root/'assets/node.exe','product_config':self.root/'assets/product.json'}
- def tearDown(self):_QUARANTINED_PROFILES.clear();self.tmp.cleanup()
+ def tearDown(self):_QUARANTINED_PROFILES.clear();_QUARANTINED_ENGINES.clear();self.tmp.cleanup()
  def tools(self):return (lambda _:self.assets,lambda p:p,lambda _:self.profile)
  def test_load_config(self):
   p=self.root/'config.json';p.write_text(json.dumps(self.value));c=RuntimeConfig.load(p)
@@ -45,9 +45,9 @@ class NativeRuntimeTests(unittest.TestCase):
  def test_clean_lifecycle(self):
   r,args=self.run_engine({'cleanup_confirmed':True});self.assertEqual(r,{'cleanup_confirmed':True})
   self.assertEqual(self.profile.calls,['verify','begin','env','complete','close'])
-  self.assertEqual(args.kwargs['expected_account_digest'],'a'*64);self.assertEqual(args.kwargs['prompt'],'hi');self.assertFalse(_QUARANTINED_PROFILES)
+  self.assertEqual(args.args[0],[str(self.assets['executable']),'--stdio','--strict-mcp-config','--product-config',str(self.assets['product_config'])]);self.assertEqual(args.kwargs['expected_account_digest'],'a'*64);self.assertEqual(args.kwargs['prompt'],'hi');self.assertFalse(_QUARANTINED_PROFILES)
  def test_unknown_retains(self):
-  self.run_engine({'cleanup_confirmed':False});self.assertEqual(self.profile.calls[-1],'quarantine');self.assertEqual(_QUARANTINED_PROFILES,[self.profile])
+  self.run_engine({'cleanup_confirmed':False});self.assertEqual(self.profile.calls[-1],'quarantine');self.assertEqual(_QUARANTINED_PROFILES,[self.profile]);self.assertEqual(len(_QUARANTINED_ENGINES),1)
  def test_numeric_cleanup_not_true(self):
   self.run_engine({'cleanup_confirmed':1});self.assertEqual(self.profile.state,'unknown_retained')
  def test_exception_retains(self):
@@ -89,3 +89,21 @@ class NativeRuntimeTests(unittest.TestCase):
    result=a.start(t,{'start_grant_id':'g'});replay=a.start(t,{'start_grant_id':'g'})
   self.assertEqual(result['outcome'],'succeeded',result);self.assertEqual(result,replay);self.assertEqual(len(starts),1)
   self.assertEqual(result['output_blocks'],[{'type':'text','text':'synthetic answer'}]);self.assertEqual(self.profile.state,'authenticated_confirmed')
+
+ def test_hold_retained_ignores_interrupt(self):
+  _QUARANTINED_PROFILES.append(self.profile)
+  count=[]
+  def sleep(_):
+   count.append(1)
+   if len(count)==1:raise KeyboardInterrupt()
+   _QUARANTINED_PROFILES.clear()
+  with patch('native_harness_api.native_trial_runtime.time.sleep',sleep):hold_retained()
+  self.assertEqual(len(count),2)
+ def test_main_holds_on_once_and_output_failure(self):
+  from unittest.mock import Mock
+  from native_harness_api.runtime import main
+  for failure in (None,BrokenPipeError(),KeyboardInterrupt()):
+   with self.subTest(failure=type(failure).__name__),patch('native_harness_api.runtime.RuntimeConfig.load',return_value=Mock()),patch('native_harness_api.runtime.node_tick',return_value={'outcome':'pending'}),patch('builtins.print',side_effect=failure),patch('native_harness_api.native_trial_runtime.hold_retained') as hold:
+    try:main(['node','--config','unused','--once'])
+    except (BrokenPipeError,KeyboardInterrupt):pass
+    hold.assert_called_once_with()

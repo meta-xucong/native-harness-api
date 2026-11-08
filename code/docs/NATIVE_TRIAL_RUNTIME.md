@@ -35,3 +35,7 @@ Node 数据根固定为 profile 内 `control`，不把账本放进原生任务 w
 `NativeTrialConfig.facade()` 仅构造网关观察服务，无账号读取；`runner()` 启动时只验证自有 profile 的元数据/ACL，不读取原生凭据。账号读取由官方 SFE 自己完成，程序不复制或解密账号文件。保存登录态与本地访问保护已由独立用户登录流程明确告知。
 
 源码集成/fixture 通过不是用户真实账号、真实模型或商业授权验收。最终实际 Windows 包和普通 CI 结果另列，不使用历史测试数代替。
+
+Runtime uses the pinned public CLI `--strict-mcp-config` option so only host-provided session MCP servers are considered, not user/plugin auto-discovery. This does not disable native built-in tools or provide a security sandbox. Interactive approval requests remain denied.
+
+When cleanup is uncertain, the CLI retains both the profile lock and native process owner, even with `--once` or broken output. It does not exit on Ctrl+C in that state. Keep the owner process open for diagnosis; forced OS termination still leaves durable execution quarantine, not permission to retry.

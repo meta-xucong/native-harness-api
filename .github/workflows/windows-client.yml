@@ -1,0 +1,86 @@
+name: Windows client package (no native inference)
+on:
+  push:
+    branches: [work/native-channel-p1b]
+    paths:
+      - 'code/src/native_harness_api/**'
+      - 'code/tools/public_harness_login*.py'
+      - 'code/tools/public_harness_models.py'
+      - 'code/tools/public_harness_runtime_assets.py'
+      - 'code/packaging/build_client.py'
+      - 'code/packaging/client.py'
+      - 'code/packaging/Client.cmd'
+      - 'code/packaging/CLIENT-README.zh-CN.md'
+      - '.github/workflows/windows-client.yml'
+permissions:
+  contents: read
+jobs:
+  package:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.13.17'
+      - name: Self-authored unit tests
+        shell: pwsh
+        run: |
+          Set-Location code
+          $env:PYTHONPATH = 'src'
+          python -m unittest discover -s tests
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Acquire and verify pinned official assets without executing them
+        shell: pwsh
+        run: |
+          $env:PYTHONPATH = 'code/tools;code/packaging'
+          @'
+          import os, pathlib, shutil, urllib.request
+          from public_harness_catalog_assets import acquire_assets
+          from build import RUNTIME_URL, RUNTIME_SHA256, digest
+          root = pathlib.Path(os.environ['RUNNER_TEMP']).resolve() / 'native-client-package'
+          root.mkdir()
+          assets = root / 'assets'; assets.mkdir()
+          acquire_assets(assets, shutil.which('7z'))
+          (assets / 'workbuddy-product.json').rename(assets / 'product.json')
+          # Fixed official Python source; never runs installer or changes PATH.
+          opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+          with opener.open(RUNTIME_URL, timeout=60) as response:
+              if response.url != RUNTIME_URL: raise RuntimeError('Unexpected runtime redirect')
+              data = response.read(32 * 1024 * 1024 + 1)
+          if len(data) > 32 * 1024 * 1024 or digest(data) != RUNTIME_SHA256:
+              raise RuntimeError('Runtime pin mismatch')
+          (root / 'python.zip').write_bytes(data)
+          '@ | python -
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Build exact-revision complete client
+        shell: pwsh
+        run: |
+          $root = Join-Path $env:RUNNER_TEMP 'native-client-package'
+          python code/packaging/build_client.py --assets-root "$root/assets" --runtime-zip "$root/python.zip" --output "$root/native-harness-windows-x64.zip" --source-revision (git rev-parse HEAD)
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Test shipped Python and command entry without starting vendor
+        shell: pwsh
+        run: |
+          $root = Join-Path $env:RUNNER_TEMP 'native-client-package'
+          Expand-Archive -LiteralPath "$root/native-harness-windows-x64.zip" -DestinationPath "$root/unpacked"
+          & "$root/unpacked/Client.cmd" --help
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & "$root/unpacked/runtime/python.exe" -I "$root/unpacked/client.py" --help
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & "$root/unpacked/runtime/python.exe" -I "$root/unpacked/client.py" login --explain
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & "$root/unpacked/runtime/python.exe" -I "$root/unpacked/client.py" node --help
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & "$root/unpacked/runtime/python.exe" -I -c "import sys;sys.path[:0]=[sys.argv[1]+'/src',sys.argv[1]+'/tools'];import native_harness_api.native_trial_runtime;import public_harness_login;import public_harness_login_profile;import public_harness_models" "$root/unpacked"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & "$root/unpacked/runtime/python.exe" -I "$root/unpacked/client.py" verify-assets
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Get-FileHash "$root/native-harness-windows-x64.zip" -Algorithm SHA256 | Format-List
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: native-harness-windows-x64-${{ github.sha }}
+          path: ${{ runner.temp }}/native-client-package/native-harness-windows-x64.zip
+          if-no-files-found: error

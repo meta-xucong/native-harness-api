@@ -158,6 +158,10 @@ def main(argv=None):
     except Exception:
         print("Native integration runtime stopped; check configuration and recover the same journal. No retry or fallback was started.", file=sys.stderr)
         return 1
+    finally:
+        native = sys.modules.get('native_harness_api.native_trial_runtime')
+        if native is not None:
+            native.hold_retained()
     return 0
 
 

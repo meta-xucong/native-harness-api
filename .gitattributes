@@ -8,3 +8,7 @@ code/tools/installed_workbuddy_smoke.py text eol=lf
 code/tools/installed_smoke_controller.ps1 text eol=lf
 code/packaging/** text eol=lf
 .github/workflows/workbuddy-local-trial.yml text eol=lf
+# Complete client sources are byte-verified against their Git commit.
+code/src/native_harness_api/*.py text eol=lf
+code/tools/public_harness_*.py text eol=lf
+.github/workflows/windows-client.yml text eol=lf

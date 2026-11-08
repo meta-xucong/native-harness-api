@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 import sys
 import uuid
+import time
 
 from .runtime import RuntimeConfig
 from .contracts import Binding
@@ -15,7 +16,17 @@ from .facade import Facade, Service
 from .node import Journal, NodePolicy, Runner
 from .public_sfe_adapter import PublicSfeAdapter
 
-_QUARANTINED_PROFILES = []  # Retain locks for unresolved owned execution until process exit.
+_QUARANTINED_PROFILES = []
+_QUARANTINED_ENGINES = []
+
+
+def hold_retained():
+    """Keep unresolved process owners and locks, including after output failure."""
+    while _QUARANTINED_PROFILES or _QUARANTINED_ENGINES:
+        try:
+            time.sleep(1)
+        except KeyboardInterrupt:
+            continue
 
 
 def _tools():
@@ -102,6 +113,7 @@ class NativeTrialConfig(RuntimeConfig):
         begun = False
         clean = False
         reusable = False
+        engine = None
         try:
             if profile.state != 'authenticated_confirmed': raise ValueError('Profile not ready')
             assets = verify_assets(self.assets_root)
@@ -113,8 +125,9 @@ class NativeTrialConfig(RuntimeConfig):
             try:
                 profile.begin_execution()
                 env = profile.environment(assets['host_node'])
-                result = PublicSfeOwnedSession(SupervisedACPTransport()).run(
-                    [str(assets['executable']), '--stdio', '--product-config', str(assets['product_config'])],
+                engine = PublicSfeOwnedSession(SupervisedACPTransport())
+                result = engine.run(
+                    [str(assets['executable']), '--stdio', '--strict-mcp-config', '--product-config', str(assets['product_config'])],
                     workspace, env, workspace=str(workspace), model_id=model_id,
                     prompt=messages[0]['content'], expected_account_digest=expected_account,
                     timeout=self.execution_timeout, cleanup_timeout=self.cleanup_timeout)
@@ -130,5 +143,7 @@ class NativeTrialConfig(RuntimeConfig):
         finally:
             if begun and not reusable:
                 _QUARANTINED_PROFILES.append(profile)
+                if engine is not None:
+                    _QUARANTINED_ENGINES.append(engine)
             else:
                 profile.close()
