@@ -5,6 +5,7 @@ import shutil
 import subprocess
 import tempfile
 import threading
+import time
 import unittest
 from native_harness_api.beta15_owned_session import OwnedSessionEngine, SHUTDOWN_ID
 from native_harness_api.supervised_acp_transport import SupervisedACPTransport
@@ -31,16 +32,18 @@ class SyntheticHostTransport:
 
 @unittest.skipUnless(NODE,'Node needed for self-authored child')
 class OwnedEngineTests(unittest.TestCase):
-    def run_mode(self, mode='success', *, owned=False, timeout=3,cleanup_timeout=2, transport_override=None):
+    def run_mode(self, mode='success', *, owned=False, timeout=15,cleanup_timeout=2, transport_override=None, engine_type=OwnedSessionEngine):
         with tempfile.TemporaryDirectory() as root:
             path=Path(root).resolve()
             env={k:v for k,v in os.environ.items() if k.upper() in ('PATH','SYSTEMROOT','WINDIR','TEMP','TMP','COMSPEC')}
             env['SHIM_FIXTURE_MODE']=mode
             transport=transport_override or (SupervisedACPTransport() if owned else SyntheticHostTransport())
-            engine=OwnedSessionEngine(transport)
+            engine=engine_type(transport)
             result=engine.run([NODE,str(CHILD.resolve())],path,env,workspace=str(path),
                               model_id='synthetic-b',prompt='synthetic prompt',timeout=timeout,
                               cleanup_timeout=cleanup_timeout)
+            if mode=='orphan':
+                self.assertTrue((path/'synthetic-orphan.ready').is_file(),result)
             return result,engine,transport
 
     def test_shutdown_ack_requires_actual_boolean_and_issued_intent(self):
@@ -117,9 +120,15 @@ class OwnedEngineTests(unittest.TestCase):
         self.assertTrue(result['cleanup']['cleanup_complete'])
 
     def test_ack_is_not_completion_timeout(self):
-        result,_,_=self.run_mode('ack_only',timeout=2)
-        self.assertEqual(result['outcome'],'indeterminate')
-        self.assertTrue(result['session']['turn']['insert_acknowledged'])
+        class ExpireAfterAcknowledgment(OwnedSessionEngine):
+            def _dispatch(self,raw):
+                super()._dispatch(raw)
+                if self.coordinator.reducer is not None and self.coordinator.reducer.insert_acknowledged:
+                    self.coordinator.deadline=time.monotonic()-1
+        result,_,_=self.run_mode('ack_only',engine_type=ExpireAfterAcknowledgment)
+        self.assertEqual(result['outcome'],'indeterminate',result)
+        self.assertIsNotNone(result['session']['turn'],result)
+        self.assertTrue(result['session']['turn']['insert_acknowledged'],result)
         self.assertFalse(result['retry_safe'])
 
     def test_duplicate_json_keys_fail(self):
@@ -157,7 +166,7 @@ class OwnedEngineTests(unittest.TestCase):
 
     @unittest.skipUnless(os.name=='nt','Actual owned Job requires Windows')
     def test_actual_windows_orphan_requires_forced_cleanup(self):
-        result,_,_=self.run_mode('orphan',owned=True,cleanup_timeout=2)
+        result,_,_=self.run_mode('orphan',owned=True,cleanup_timeout=4)
         self.assertEqual(result['outcome'],'indeterminate')
         self.assertFalse(result['natural_owned_exit'])
         self.assertTrue(result['cleanup']['owned_job_empty'])

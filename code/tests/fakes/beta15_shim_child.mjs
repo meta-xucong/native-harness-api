@@ -1,6 +1,8 @@
 /** Self-authored synthetic child. No SDK, account or vendor code. */
 import readline from 'node:readline';
 import { spawn } from 'node:child_process';
+import { existsSync } from 'node:fs';
+import path from 'node:path';
 import { createExternalRuntime } from '../../tools/beta15_external_runtime.mjs';
 const mode = process.env.SHIM_FIXTURE_MODE || 'success';
 const handlers = new Map();
@@ -20,7 +22,19 @@ const client = {
     async new() { return {sessionId:'synthetic-root',configOptions:catalog()}; },
     async setConfigOption(params) { if(mode!=='wrong_model') current=params.value; return {configOptions:catalog()}; },
     async prompt() {
-      if (mode==='orphan') spawn(process.execPath,['-e','setTimeout(()=>{},60000)'],{stdio:'ignore'}).unref();
+      if (mode==='orphan') {
+        const marker=path.join(process.cwd(),'synthetic-orphan.ready');
+        // Detached avoids libuv's parent-lifetime child Job on Windows; it does
+        // not request CREATE_BREAKAWAY_FROM_JOB from the owning Windows Job.
+        const child=spawn(process.execPath,['-e',"require('node:fs').writeFileSync(process.argv[1],'ready');setTimeout(()=>{},15000)",marker],{stdio:'ignore',detached:true});
+        await new Promise((resolve,reject)=>{child.once('spawn',resolve);child.once('error',reject);});
+        child.unref();
+        const until=Date.now()+3000;
+        while(!existsSync(marker)) {
+          if(Date.now()>=until) throw new Error('SYNTHETIC_CHILD_NOT_READY');
+          await new Promise(resolve=>setTimeout(resolve,10));
+        }
+      }
       if (mode==='oversized') process.stdout.write('x'.repeat(300000)+'\n');
       if (mode==='bad_frame') process.stdout.write('{"id":3,"id":3}\n');
       if (mode==='stderr_overflow') process.stderr.write('x'.repeat(70000));
