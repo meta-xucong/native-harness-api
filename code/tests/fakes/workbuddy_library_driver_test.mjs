@@ -154,7 +154,7 @@ assert.equal(blockedImport, 0); count++;
 
 // Self-authored bytes only. Electron's documented virtual stat semantics are
 // represented explicitly: a .asar root is a directory, not its physical file.
-const folder = await fs.mkdtemp(path.join(tmpdir(), 'synthetic-asar-fs-'));
+const folder = await fs.realpath(await fs.mkdtemp(path.join(tmpdir(), 'synthetic-asar-fs-')));
 try {
   const archive = path.join(folder, 'synthetic.asar');
   const backing = path.join(folder, 'synthetic-entry.js');
