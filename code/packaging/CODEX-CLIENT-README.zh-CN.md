@@ -40,3 +40,13 @@ runtime\python.exe -I tools\prepare_native_deployment.py --spec client-config.ex
 输出为本项目支持的文本快照与任务状态；commentary 仅反映运行状态，不镜像其原文。支持 partial/final 文本与结束/错误状态，不是完整 Codex UI 镜像。Windows 官方进程、设备登录、真实账号模型执行仍需本地验收；发布包中的合成测试及哈希验证不能代替真实运行验证。包不宣称账号服务转售获得授权。
 
 `preflight` 是旧 WorkBuddy 检查，不适用于此包。Codex 使用 `verify-assets`、登录、模型目录和实际任务分层验收。
+
+
+## 官方许可证
+
+本包 `licenses/codex/LICENSE` 和 `licenses/codex/NOTICE` 保留 OpenAI Codex 官方文本原始字节，来源为固定版本 `rust-v0.167.0` 对应提交 `086ccc833bc9cf01024ad2dd6af7dbd421b6bf9a`：
+
+- https://github.com/openai/codex/blob/086ccc833bc9cf01024ad2dd6af7dbd421b6bf9a/LICENSE
+- https://github.com/openai/codex/blob/086ccc833bc9cf01024ad2dd6af7dbd421b6bf9a/NOTICE
+
+这些是软件分发许可文本，不代表 ChatGPT 账号服务转售授权。

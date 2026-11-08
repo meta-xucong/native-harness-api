@@ -40,7 +40,9 @@ def sources(code, revision, harness='workbuddy'):
     selected += [('code/packaging/'+n,n) for n in PACKAGING if harness != 'codex' or n not in ('CLIENT-README.zh-CN.md', 'client-config.example.json')]
     if harness == 'codex':
         selected += [('code/packaging/CODEX-CLIENT-README.zh-CN.md', 'CLIENT-README.zh-CN.md'),
-                     ('code/packaging/CODEX-client-config.example.json', 'client-config.example.json')]
+                     ('code/packaging/CODEX-client-config.example.json', 'client-config.example.json'),
+                     ('code/packaging/CODEX-LICENSE.txt', 'licenses/codex/LICENSE'),
+                     ('code/packaging/CODEX-NOTICE.txt', 'licenses/codex/NOTICE')]
     selected += [('code/docs/DEPLOYMENT_CHAIN.zh-CN.md','DEPLOYMENT_CHAIN.zh-CN.md'),
                  ('code/docs/NATIVE_EVENT_STREAM.md','NATIVE_EVENT_STREAM.md'),
                  ('code/docs/MULTI-HARNESS-CONFIG.md','MULTI-HARNESS-CONFIG.md')]

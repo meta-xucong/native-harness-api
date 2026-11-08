@@ -14,3 +14,6 @@ code/tools/public_harness_*.py text eol=lf
 .github/workflows/windows-client.yml text eol=lf
 code/docs/DEPLOYMENT_CHAIN.zh-CN.md text eol=lf
 code/docs/NATIVE_EVENT_STREAM.md text eol=lf
+code/tools/codex_*.py text eol=lf
+code/tools/prepare_native_deployment.py text eol=lf
+code/docs/MULTI-HARNESS-CONFIG.md text eol=lf

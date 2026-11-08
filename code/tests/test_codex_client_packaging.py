@@ -123,5 +123,11 @@ class MixedPackageSourceTests(unittest.TestCase):
                     for module in ('codex_trial_runtime.py', 'public_sfe_adapter.py'):
                         self.assertIn('src/native_harness_api/' + module, files)
                     self.assertFalse(any(name.startswith('assets/') for name in files))
+                    for name in ('LICENSE', 'NOTICE'):
+                        destination = 'licenses/codex/' + name
+                        if harness == 'codex':
+                            self.assertEqual(files[destination].name, 'CODEX-' + name + '.txt')
+                        else:
+                            self.assertNotIn(destination, files)
                     readme = 'CODEX-CLIENT-README.zh-CN.md' if harness == 'codex' else 'CLIENT-README.zh-CN.md'
                     self.assertEqual(files['CLIENT-README.zh-CN.md'].name, readme)
