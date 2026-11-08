@@ -144,6 +144,10 @@ def start_node(path, config):
 
 
 def main(root, argv=None):
+    # Windows redirected stdio may default to cp1252, unlike the UTF-8 console.
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, 'reconfigure'):
+            stream.reconfigure(encoding='utf-8')
     parser = Parser(description='WorkBuddy 首次设置 / 使用原配置启动。不会自行发送模型请求。')
     parser.add_argument('--config', type=Path, help='明确选择已有 windows-node.json，保留原身份及任务记录')
     args = parser.parse_args(argv)

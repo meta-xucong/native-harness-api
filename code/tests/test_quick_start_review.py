@@ -76,3 +76,11 @@ class QuickStartReviewTests(unittest.TestCase):
         self.assertEqual(result.exception.code, 2)
         self.assertNotIn('PRIVATE_ARGUMENT_FIXTURE', output.getvalue())
         console.assert_not_called()
+
+    def test_redirected_legacy_encoding_can_print_help(self):
+        import subprocess
+        packaging = Path(__file__).resolve().parents[1] / 'packaging'
+        script = "import sys;sys.path.insert(0,sys.argv[1]);import quick_start;sys.stdout.reconfigure(encoding='cp1252');sys.stderr.reconfigure(encoding='cp1252');quick_start.main(sys.argv[1],['--help'])"
+        result = subprocess.run([sys.executable, '-I', '-c', script, str(packaging)], capture_output=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('首次设置', result.stdout.decode('utf-8'))
