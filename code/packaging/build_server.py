@@ -8,6 +8,8 @@ import subprocess
 import zipfile
 
 LABELS=('native-harness-api','render-bridge','sub2api')
+# Omit known unsafe, unnecessary deployment notes BEFORE reading their blobs.
+EXCLUDED_PATHS={'native-harness-api':[], 'render-bridge':[], 'sub2api':['DEV_GUIDE.md']}
 
 
 def git(root,*args,input=None):
@@ -15,7 +17,7 @@ def git(root,*args,input=None):
                           stdout=subprocess.PIPE,stderr=subprocess.PIPE).stdout
 
 
-def revision_files(root, revision):
+def revision_files(root, revision, excluded=()):
     if type(revision) is not str or re.fullmatch('[0-9a-f]{40}',revision) is None:
         raise ValueError('Full source commit required')
     if git(root,'cat-file','-t',revision).strip()!=b'commit':raise ValueError('Not a commit')
@@ -24,7 +26,9 @@ def revision_files(root, revision):
     for line in listing:
         if not line:continue
         metadata,name=line.split(b'\t',1);mode,kind,sha=metadata.decode('ascii').split()
-        name=name.decode('utf-8');parts=PurePosixPath(name).parts
+        name=name.decode('utf-8')
+        if name in excluded:continue
+        parts=PurePosixPath(name).parts
         if (mode not in ('100644','100755') or kind!='blob' or not parts or name.startswith('/')
                 or '\\' in name or any(p in ('.','..','.git') for p in parts) or any(ord(c)<32 for c in name)):
             raise ValueError('Unsafe source tree entry')
@@ -60,15 +64,15 @@ def build_server(repositories, output):
     files={};revisions={}
     for label in LABELS:
         root,revision=repositories[label];revisions[label]=revision
-        for name,item in revision_files(root,revision).items():files[label+'/'+name]=item
+        for name,item in revision_files(root,revision,EXCLUDED_PATHS[label]).items():files[label+'/'+name]=item
     manifest={'format':1,'kind':'native-harness-three-repository-source','revisions':revisions,
               'windows_client_source_revision':revisions['native-harness-api'],
-              'deployment':'NOT_RUN','real_account_model':'NOT_RUN',
+              'deployment':'NOT_RUN','real_account_model':'NOT_RUN','excluded_paths':EXCLUDED_PATHS,
               'files':{name:{'sha256':hashlib.sha256(content).hexdigest(),'mode':mode}
                        for name,(mode,content) in sorted(files.items())}}
     readme='''# 配套服务器源码，不是已部署服务
 
-三个文件夹均来自 SERVER-SOURCE-MANIFEST.json 的精确 Git 提交，不包含本机未提交文件、.git、原生 vendor 资产或用户 profile。原仓库许可证/蓝图/源码和测试分别保留。
+三个文件夹均来自 SERVER-SOURCE-MANIFEST.json 的精确 Git 提交，不包含本机未提交文件、.git、原生 vendor 资产或用户 profile。原仓库许可证/蓝图/源码和测试分别保留。此为有明确排除清单的源码快照，不是无遗漏的 Git archive；manifest.excluded_paths 记录未读取、未打包的非必要安全敏感文档。
 
 从 native-harness-api/code/docs/DEPLOYMENT_CHAIN.zh-CN.md 开始。生成器是 native-harness-api/code/tools/prepare_native_deployment.py。Windows客户端 CLIENT-MANIFEST.json 的 source_revision 必须等于本包 windows_client_source_revision；不要混用不同版本。
 
@@ -114,17 +118,20 @@ def verify_server(path):
                 result[key]=value
             return result
         manifest=json.loads(archive.read('SERVER-SOURCE-MANIFEST.json'),object_pairs_hook=unique)
-        if (type(manifest) is not dict or set(manifest)!={'format','kind','revisions','windows_client_source_revision','deployment','real_account_model','files'}
+        if (type(manifest) is not dict or set(manifest)!={'format','kind','revisions','windows_client_source_revision','deployment','real_account_model','excluded_paths','files'}
                 or type(manifest['format']) is not int or manifest['format']!=1
                 or manifest['kind']!='native-harness-three-repository-source'
                 or manifest['deployment']!='NOT_RUN' or manifest['real_account_model']!='NOT_RUN'
                 or type(manifest['revisions']) is not dict or set(manifest['revisions'])!=set(LABELS)
                 or any(type(v) is not str or re.fullmatch('[0-9a-f]{40}',v) is None for v in manifest['revisions'].values())
                 or manifest['windows_client_source_revision']!=manifest['revisions']['native-harness-api']
+                or manifest['excluded_paths']!=EXCLUDED_PATHS
                 or type(manifest['files']) is not dict):
             raise ValueError('Invalid source manifest')
         if set(names)!=set(manifest['files'])|{'SERVER-SOURCE-MANIFEST.json'}:
             raise ValueError('Archive inventory mismatch')
+        for label,excluded in EXCLUDED_PATHS.items():
+            if any(label+'/'+name in names for name in excluded):raise ValueError('Excluded source file included')
         for name,record in manifest['files'].items():
             info=archive.getinfo(name)
             if (type(record) is not dict or set(record)!={'mode','sha256'}

@@ -4,6 +4,7 @@ on:
     branches: [work/native-channel-p1b]
     paths:
       - 'code/src/native_harness_api/**'
+      - 'code/tests/**'
       - 'code/tools/public_harness_login*.py'
       - 'code/tools/public_harness_models.py'
       - 'code/tools/public_harness_preflight.py'

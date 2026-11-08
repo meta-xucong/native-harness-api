@@ -73,7 +73,7 @@ def build_plan(spec, identities=None):
         routes[binding['model_alias']] = {'execution_mode':'workbuddy_local_trial','origin':'http://127.0.0.1:8790',
              'credential_env':'NATIVE_FACADE_SERVICE_TOKEN','source':identities['source'],
              'ledger_instance':identities['ledger'], **binding}
-    sub2api = {'gateway':{'native_harness':{'enabled':True,'accepting_new':False,'allowed_user_id':spec['user_id'],
+    sub2api = {'gateway':{'native_harness':{'enabled':True,'accepting_new':False,'standard_api':False,'standard_wait_seconds':180,'allowed_user_id':spec['user_id'],
                'allowed_api_key_id':spec['api_key_id'],'routes':routes}}}
     return {'bridge.json':bridge, 'facade.json':facade, 'windows-node.json':node,
             'sub2api.native-harness.yaml':sub2api,

@@ -96,3 +96,6 @@ class DeploymentTests(unittest.TestCase):
   with patch('public_harness_preflight.RuntimeConfig.load',return_value=config),patch('public_harness_preflight.check',return_value={'checks_passed':True}),patch('public_harness_preflight.check_sub2api',return_value={'sub2api_auth_verified':True}) as sub,contextlib.redirect_stdout(io.StringIO()):
    self.assertEqual(main(['--config','unused','--sub2api-origin','https://sub2.example.com']),0)
    sub.assert_called_once_with(config,'https://sub2.example.com')
+ def test_standard_api_is_explicitly_disabled_with_bounded_wait_default(self):
+  cfg=self.plan['sub2api.native-harness.yaml']['gateway']['native_harness']
+  self.assertIs(cfg['standard_api'],False);self.assertEqual(cfg['standard_wait_seconds'],180)

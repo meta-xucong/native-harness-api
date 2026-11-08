@@ -57,3 +57,18 @@ class ServerPackagingTests(unittest.TestCase):
        m=json.loads(data);m['revisions']['render-bridge']='abc';data=json.dumps(m).encode()
      z.writestr(info,data)
    with self.subTest(variant=variant),self.assertRaises(ValueError):build.verify_server(out)
+ def test_excluded_document_never_read_or_bundled(self):
+  (self.repo/'DEV_GUIDE.md').write_text('synthetic do-not-bundle fixture')
+  self.git('add','DEV_GUIDE.md');self.git('commit','-qm','omission fixture');self.sha=self.git('rev-parse','HEAD').decode().strip()
+  from unittest.mock import patch
+  original=build.git;seen=[]
+  def tracked(root,*args,input=None):
+   if args[0] in ('cat-file',) and '--batch' in args:seen.append(input)
+   return original(root,*args,input=input)
+  excluded_sha=self.git('rev-parse','HEAD:DEV_GUIDE.md').strip()
+  with patch.object(build,'git',tracked):files=build.revision_files(self.repo,self.sha,('DEV_GUIDE.md',))
+  self.assertNotIn('DEV_GUIDE.md',files)
+  self.assertTrue(all(excluded_sha not in request for request in seen))
+  out=self.root/'filtered.zip';build.build_server(self.repos(),out)
+  with zipfile.ZipFile(out) as z:self.assertNotIn('sub2api/DEV_GUIDE.md',z.namelist())
+  self.assertEqual(build.verify_server(out)['excluded_paths'],build.EXCLUDED_PATHS)

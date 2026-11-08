@@ -87,11 +87,11 @@ Client.cmd preflight --config C:\path\windows-node.json
 
 ## 5. 第一条真实操作与恢复
 
-请求走专用 `/v1/native-harness/chat/completions`，不是现有普通 `/v1/chat/completions` provider UI。使用允许的 Sub2API API key，body 仅单条 user 文本、`stream:false`、`n:1`，model 为匹配的 `workbuddy-*` alias。为一次逻辑操作保存一个稳定 `Idempotency-Key` 和原始 body。
+默认请求走专用 `/v1/native-harness/chat/completions`。生成器显式输出 `standard_api:false`、`standard_wait_seconds:180`。可由管理员对该专用允许列表 Key 显式开启 `standard_api:true`，使客户端使用 `base_url=https://你的Sub2API/v1` 的 `/v1/chat/completions` 和 `/v1/models`；这不是普通 provider 管理 UI，也不改变其他 Key 的路由。使用允许的 Sub2API API key，body 仅单条 user 文本、`stream:false`、`n:1`，model 为匹配的 `workbuddy-*` alias。为一次逻辑操作保存一个稳定 `Idempotency-Key` 和原始 body。
 
 Facade 的有限等待可能先返回 504。此时不能生成新 key、换模型或换 body；稍后仅重发**同 key、同 body**获取相同操作的状态/结果。相同请求不会换路由重跑。未知进程或 cleanup 情况需要保留 owner 进程与全部账本，不能删除 profile、清库或新建任务伪装重试。
 
-当前是单 owner、单槽、非收费、非流式、单 user 文本模式；下游工具 schema、tool-role 和需要原生交互审批的请求不支持。目录/账号隔离不是多租户安全沙箱，官方程序可能运行不需要额外审批的原生工具。完成这些软件配置不证明商业转供许可或生产服务已验收。
+当前是单 owner、单槽、非收费、单 user 文本模式；专用路径仍非流式，标准路径可选下述终态缓冲SSE；下游工具 schema、tool-role 和需要原生交互审批的请求不支持。目录/账号隔离不是多租户安全沙箱，官方程序可能运行不需要额外审批的原生工具。完成这些软件配置不证明商业转供许可或生产服务已验收。
 
 ## 多模型共用一台电脑和一个账号
 
@@ -102,3 +102,11 @@ Facade 的有限等待可能先返回 504。此时不能生成新 key、换模�
 后续修改映射时先停止新准入并处理已有任务；保持source、ledger、Node/profile/journal和binding身份，改变某映射语义必须升级对应revision并同步三仓，不重新生成ledger来重试。移除模型只禁止新任务，已有冻结操作仍优先只读恢复其证据；缺少证据永不触发重新推理。多模型路由不代表多租户/计费/外部工具调用兼容，也不代表真实模型已经实测。
 
 可选Sub2API GET预检的 `sub2api_model_listed` 现表示所有本地配置别名都出现在返回目录中，而非仅第一项。关闭admission时可为false；该检查仍不做推理或证明实时账号状态。
+
+## 标准路径的等待、SSE与排空
+
+`standard_wait_seconds` 默认为180秒，允许0–300；0表示不追加观察。仅明确504 `TASK_WAIT_TIMEOUT` 后，在同一请求预算内以只读方式观察同一冻结任务，不创建新任务或跨provider重试。客户端断连只停止观察，不代表原生任务取消。客户端及Sub2API前置反代超时必须覆盖配置等待预算与网络余量（180秒配置建议至少240秒），应由部署管理员验证实际每一跳。
+
+标准路径 `stream:true` 仅为 **buffered-final SSE**：已验证终态后一次发送完整内容delta、结束帧和[DONE]，响应标记 `X-Native-Stream-Mode: buffered-final`。不是实时token流，完成前无成功事件/heartbeat；超时或错误仍为JSON错误，无[DONE]。不支持stream_options，usage未知不伪造。专用native-harness路径仍拒绝stream:true。
+
+排空必须设置 `accepting_new:false`，同时保留 `standard_api:true` 和原专用Key/owner，直到已受理和unknown任务恢复结束。不能通过关闭standard_api或更换allowlisted Key来排空，否则会撤销标准路径保留、使旧请求进入普通路由；确需撤销先禁用该Key，禁止将它重用于普通provider。两种路径共用操作身份，恢复始终使用同Key/同正文/同Idempotency-Key。完整合同见配套Sub2API源码 `docs/native-harness/STANDARD_API_OPT_IN.md`。
