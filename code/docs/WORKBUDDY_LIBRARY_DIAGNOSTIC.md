@@ -127,3 +127,66 @@ Self-authored fixtures distinguish physical file versus virtual directory,
 exercise separate byte readers, reject mismatches/missing API objects, and prove
 that failed physical verification blocks import and returns a finite failure.
 They do not substitute for actual Electron or WorkBuddy execution.
+
+## Loader revision 4: finite initialization evidence
+
+The original-fs correction plus canonical fixture path was executed once at
+`98b8704be6e8cd4cac7d870309cc7cb565533a1a`, hosted run `42430640869`.
+Windows prerequisites passed (27 Node scenarios; 371 Python tests, 4 reported
+skips, with all four real Windows library lifecycle tests actually passing).
+The actual schema-2 DTO now confirms entry verification, import, harness and
+client construction. It reports stage 4 / generic error class 8 at 4264 ms,
+without confirmed connection. Stage 4 includes both connect and the following
+protocol-version check; no authentication diagnosis is justified. Client and
+harness close/settlement and all owned Job/host/handle/IO cleanup checks passed.
+Only the 672-byte sanitized summary was exported; no native exception was saved.
+
+Subsequent pinned-source review identifies a concrete compatibility requirement:
+`lib/agent/v2.js` selectProfile rejects executor-backed MCP without both
+`elicitation.form` and `elicitation.url` client capabilities. The default
+application services supply that MCP integration. The old client advertises
+neither. This inspected deterministic rejection path is not yet the captured
+prior exception; do not relabel the prior generic error as a proven cause.
+
+The corrected client advertises `elicitation:{form:{},url:{}}` and registers
+`elicitation/create` before connecting. Its handler never reads request params,
+opens a URL, renders a form, collects input, or accepts anything. It sets the
+bounded numeric `elicitation_seen` marker to 1, aborts the existing harness
+controller, and returns only `{action:'cancel'}`. A returned cancellation is not
+proof it was delivered. Any observed elicitation makes the diagnostic fail,
+even if connect returns or an event arrives during cleanup. Native permission
+handling remains the SDK's default cancellation; no allow_always or new request
+method is added. The external account/product profiles remain unchanged.
+
+The loader/pins, initiated vendor calls, deadlines, isolation environment and
+owned-process cleanup are unchanged. Schema 3 adds
+`connect_returned` to distinguish a rejected connect from the subsequent
+protocol assertion. False does not say which native initialize/initialized
+handler was reached. It also recognizes the pinned SDK's own numeric RPC error
+codes, which the old string-only classifier reduced to generic class 8:
+
+- 9: -32700; 10: -32600; 11: -32601; 12: -32602; 13: -32603.
+- 14: -32000; 15: -32800; 16: -32001; 17: -32002.
+
+These are observations of codes, not diagnoses. In particular -32002 is used for
+different meanings by the Harness and SDK. Existing classes 1..8 are unchanged.
+`error_detail` is 0 for unmatched errors, or a finite exact-match bucket from
+pinned source: 1 invalid Harness initialize response; 2 missing SDK client
+context; 3 client connect timeout; 4 client closed; 5 harness closing;
+6 Harness connection closed; 7 RPC transport closed; 8 RPC transport failed;
+9 internal error; 10 invalid params; 11 missing executor-backed MCP elicitation
+capabilities. Matching reads own data descriptors only,
+never getters, prototype fields, cause/data/stack, or arbitrary string conversion.
+Only the integer bucket leaves the process; no message or substring is exported.
+This is not a claim that every possible initialization error is covered.
+
+A separately reviewed single cloud experiment uses the fresh fixed root
+`RUNNER_TEMP/native-harness-library-connect-evidence-once` and the sole fixed
+summary/artifact `library-connect-evidence-sanitized-summary.json` /
+`library-connect-evidence-sanitized-summary`. Metadata records loader_revision=4.
+No consumed root is reused, no automatic retry, alternate entry, permissions,
+account/session/model/prompt request, user PC access, or deployment is introduced.
+As before, empty hosted HOME/config and owned Job are not a network/filesystem
+sandbox. The exact source and command require independent review before this
+new automatic push-triggered experiment. Handshake success alone would not
+establish account reuse or real-use readiness.

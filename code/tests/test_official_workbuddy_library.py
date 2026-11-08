@@ -16,7 +16,7 @@ import official_workbuddy_library as p
 
 
 def dto():
-    return {**{k:True for k in p.BOOLS},'schema_version':2,'protocol_version':1,'failure_stage':0,'elapsed_ms':1,'error_class':0}
+    return {**{k:True for k in p.BOOLS},'schema_version':3,'protocol_version':1,'failure_stage':0,'elapsed_ms':1,'error_class':0,'error_detail':0,'elicitation_seen':0}
 
 class Input(io.BytesIO):
     def write(self,_): raise AssertionError('stdin must never be written')
@@ -68,14 +68,28 @@ class Tests(unittest.TestCase):
             (package/'lib/public.js').write_bytes(b'changed!!')
             with self.assertRaises(p.Rejected):check(good)
 
-    def test_schema2_error_classes_and_entry_order(self):
-        for error in range(1,9):
+    def test_schema3_error_classes_and_entry_order(self):
+        for error in range(1,18):
             d=dto(); d.update(success=False,import_ok=False,harness_created=False,client_created=False,
-                connected=False,client_closed=False,harness_closed=False,harness_settled=False,
+                connect_returned=False,connected=False,client_closed=False,harness_closed=False,harness_settled=False,
                 protocol_version=0,failure_stage=1,error_class=error)
             self.assertEqual(p.parse_dto(json.dumps(d).encode())['error_class'],error)
         d=dto();d['schema_version']=1
         with self.assertRaises(p.Rejected):p.parse_dto(json.dumps(d).encode())
+
+    def test_connect_return_evidence(self):
+        d=dto();d.update(connected=False,success=False,protocol_version=0,failure_stage=4,error_class=8)
+        self.assertTrue(p.parse_dto(json.dumps(d).encode())['connect_returned'])
+        d['connect_returned']=False
+        self.assertFalse(p.parse_dto(json.dumps(d).encode())['connect_returned'])
+        d['connected']=True
+        with self.assertRaises(p.Rejected):p.parse_dto(json.dumps(d).encode())
+        d['connected']=False;d['connect_returned']=True;d['client_created']=False
+        with self.assertRaises(p.Rejected):p.parse_dto(json.dumps(d).encode())
+        d=dto();d.update(connected=False,success=False,protocol_version=0,failure_stage=4,error_class=8)
+        for detail in range(12):
+            d['error_detail']=detail
+            self.assertEqual(p.parse_dto(json.dumps(d).encode())['error_detail'],detail)
 
     def test_complete_tree_pin(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -148,7 +162,7 @@ class Tests(unittest.TestCase):
         for raw in [b'{}',b'{"a":1,"a":2}',b'{"a":NaN}',b'\xff',b' '*4097]:
             with self.assertRaises(p.Rejected): p.parse_dto(raw)
         for key,val in [('protocol_version',True),('failure_stage',8),('elapsed_ms',float('inf')),
-                        ('entry_verified',False),('error_class',9),('error_class',True),('import_ok',False),('extra','SECRET')]:
+                        ('entry_verified',False),('error_class',18),('error_detail',12),('error_detail',True),('error_detail',1),('elicitation_seen',1),('elicitation_seen',2),('elicitation_seen',True),('error_class',True),('import_ok',False),('extra','SECRET')]:
             d=dto();d[key]=val
             with self.subTest(key=key),self.assertRaises(p.Rejected):p.parse_dto(json.dumps(d).encode())
 

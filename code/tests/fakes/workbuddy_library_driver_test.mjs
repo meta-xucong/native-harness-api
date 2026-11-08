@@ -4,7 +4,7 @@ import * as fs from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
-import { runHandshake as actualHandshake, complete, classifyError, verifyPhysicalFile, verifyVirtualFile } from '../../tools/workbuddy_library_driver.mjs';
+import { runHandshake as actualHandshake, complete, classifyError, classifyDetail, verifyPhysicalFile, verifyVirtualFile } from '../../tools/workbuddy_library_driver.mjs';
 
 const runHandshake = (load, options = {}, clock) => actualHandshake(load, { verifyEntry: async () => {}, ...options }, clock);
 
@@ -13,7 +13,7 @@ function fixture(fail = '') {
   const closed = fail === 'settle' ? Promise.reject(new Error('PRIVATE_SECRET')) : Promise.resolve();
   closed.catch(() => {});
   const harness = { closed, async close() { calls.push('harness.close'); if (fail === 'harness.close') throw Error('PRIVATE_SECRET'); } };
-  const client = { initialization: { protocolVersion: fail === 'protocol' ? 2 : 1 },
+  const client = { on(method, handler) { calls.push('on'); assert.equal(method, 'elicitation/create'); assert.equal(typeof handler, 'function'); }, initialization: { protocolVersion: fail === 'protocol' ? 2 : 1 },
     async connect(h, options) { calls.push('connect'); assert.equal(h, harness); assert.ok(options.timeoutMs > 0);
       if (fail === 'connect') throw Error('PRIVATE_SECRET'); if (fail === 'deadline') return new Promise(() => {}); },
     async close() { calls.push('client.close'); if (fail === 'client.close') throw Error('PRIVATE_SECRET'); if (fail === 'close.deadline') return new Promise(() => {}); } };
@@ -21,7 +21,7 @@ function fixture(fail = '') {
     async createHarness(options) { calls.push('createHarness'); assert.equal(options.configDir, '/synthetic');
       assert.equal(options.strictMcpConfig, true); assert.ok(options.signal instanceof AbortSignal);
       if (fail === 'harness') throw Error('PRIVATE_SECRET'); return harness; },
-    createClient(options) { calls.push('createClient'); assert.deepEqual(options, { account: { mode: 'external' }, product: { mode: 'external' } });
+    createClient(options) { calls.push('createClient'); assert.deepEqual(options, { account: { mode: 'external' }, product: { mode: 'external' }, capabilities: { elicitation: { form: {}, url: {} } } });
       if (fail === 'client') throw Error('PRIVATE_SECRET'); return client; }
   };
   // Only these permitted APIs exist. Any accidental prohibited verb fails the fixture.
@@ -32,13 +32,14 @@ async function test(fail, expectedStage, expectedCalls) {
   const f = fixture(fail);
   const dto = await runHandshake(f.load, { configDir: '/synthetic', timeoutMs: fail === 'deadline' ? 30 : 1000, cleanupMs: fail === 'close.deadline' ? 30 : 1000 });
   assert.equal(dto.failure_stage, expectedStage);
+  assert.equal(dto.connect_returned, ['', 'protocol', 'client.close', 'harness.close', 'settle', 'close.deadline'].includes(fail));
   assert.equal(complete(dto), expectedStage === 0);
   assert.deepEqual(f.calls, expectedCalls);
   assert.ok(Object.values(dto).every(v => typeof v === 'boolean' || (typeof v === 'number' && Number.isFinite(v))));
   assert.ok(!JSON.stringify(dto).includes('PRIVATE_SECRET'));
   count++;
 }
-const full = ['import','createHarness','createClient','connect','client.close','harness.close'];
+const full = ['import','createHarness','createClient','on','connect','client.close','harness.close'];
 await test('',0,full);
 await test('import',1,['import']);
 await test('harness',2,['import','createHarness']);
@@ -86,7 +87,7 @@ assert.equal(syncClosed, 1); count++;
 let cleanupHarness = 0;
 const exhaustedClose = await runHandshake(async () => ({
   createHarness: async () => ({ closed: Promise.resolve(), close: async () => { cleanupHarness++; } }),
-  createClient: () => ({ initialization: { protocolVersion: 1 }, connect: async () => {},
+  createClient: () => ({ on() {}, initialization: { protocolVersion: 1 }, connect: async () => {},
     close: async () => { tick += 15; } })
 }), { timeoutMs: 1000, cleanupMs: 5 }, clock);
 assert.equal(exhaustedClose.failure_stage, 7);
@@ -100,7 +101,7 @@ let closing = false, closeClockReads = 0, raceClientCloses = 0, raceHarnessClose
 const raceClock = () => !closing ? 0 : (++closeClockReads <= 2 ? 0 : 20);
 const microtaskRace = await runHandshake(async () => ({
   createHarness: async () => ({ closed: Promise.resolve(), close: () => { raceHarnessCloses++; } }),
-  createClient: () => ({ initialization: { protocolVersion: 1 }, connect: async () => {},
+  createClient: () => ({ on() {}, initialization: { protocolVersion: 1 }, connect: async () => {},
     close: () => { raceClientCloses++; closing = true; } })
 }), { timeoutMs: 1000, cleanupMs: 5 }, raceClock);
 assert.equal(microtaskRace.failure_stage, 7);
@@ -116,7 +117,7 @@ const ordered = await runHandshake(() => { verifyCalls.push('import'); return ve
   verifyEntry: async () => { verifyCalls.push('verify'); }
 });
 assert.deepEqual(verifyCalls, ['verify', 'import']);
-assert.equal(ordered.schema_version, 2);
+assert.equal(ordered.schema_version, 3);
 assert.equal(ordered.entry_verified, true);
 assert.equal(ordered.error_class, 0); count++;
 let blockedImport = 0;
@@ -143,6 +144,77 @@ assert.equal(classifyError(new Proxy({}, { getOwnPropertyDescriptor() { throw Er
 for (const [code, value] of Object.entries({ ERR_MODULE_NOT_FOUND:1, MODULE_NOT_FOUND:2, ENOENT:3, EACCES:4, EPERM:5, ERR_UNSUPPORTED_DIR_IMPORT:6, ERR_UNKNOWN_FILE_EXTENSION:7 })) {
   assert.equal(classifyError({ code }), value);
 }
+count++;
+// Classify only finite, pinned diagnostics; strings and arbitrary RPC codes stay hidden.
+for (const [code, value] of [[-32700,9],[-32600,10],[-32601,11],[-32602,12],[-32603,13],[-32000,14],[-32800,15],[-32001,16],[-32002,17]]) {
+  assert.equal(classifyError({ code, message: 'PRIVATE_SECRET' }), value);
+}
+for (const code of [-32003, NaN, Infinity, '-32603', true]) assert.equal(classifyError({ code }), 8);
+assert.equal(classifyDetail({ get message() { getterCalls++; throw Error('PRIVATE_SECRET'); } }), 0);
+assert.equal(classifyDetail(Object.create({ message: 'Client closed' })), 0);
+assert.equal(classifyDetail({ message: 'Client closed PRIVATE_SECRET' }), 0);
+assert.equal(classifyDetail(new Proxy({}, { getOwnPropertyDescriptor() { throw Error('PRIVATE_SECRET'); } })), 0);
+assert.equal(getterCalls, 0);
+for (const [message, value] of Object.entries({ 'Invalid Harness initialize response':1,
+  'ACP SDK did not create its client context':2, 'Client connect timed out':3, 'Client closed':4, 'Harness is closing':5, 'Agent Harness connection is closed':6, 'RPC transport is closed':7,
+  'RPC transport failed':8, 'Internal error':9, 'Invalid params':10,
+  'Executor-backed MCP requires elicitation.form and elicitation.url client capabilities':11 })) {
+  assert.equal(classifyDetail(new Error(message)), value);
+}
+count++;
+const rpcFail = await runHandshake(async () => ({
+  createHarness: async () => ({ closed: Promise.resolve(), close: async () => {} }),
+  createClient: () => ({ on() {}, connect: async () => { throw { code: -32603, message: 'PRIVATE_SECRET' }; }, close: async () => {} })
+}));
+assert.equal(rpcFail.failure_stage, 4);
+assert.equal(rpcFail.error_class, 13);
+assert.equal(rpcFail.error_detail, 0);
+assert.equal(rpcFail.connect_returned, false);
+assert.ok(!JSON.stringify(rpcFail).includes('PRIVATE_SECRET'));
+count++;
+const detailFail = await runHandshake(async () => ({
+  createHarness: async () => ({ closed: Promise.resolve(), close: async () => {} }),
+  createClient: () => ({ on() {}, connect: async () => { throw new Error('Invalid Harness initialize response'); }, close: async () => {} })
+}));
+assert.equal(detailFail.error_detail, 1);
+assert.equal(detailFail.connect_returned, false);
+assert.ok(!JSON.stringify(detailFail).includes('Invalid Harness'));
+count++;
+// Advertising compatibility must not grant permission or make elicitation a success.
+let elicitationHandler, observedSignal, untouchedRequest = 0;
+const elicitation = await runHandshake(async () => ({
+  createHarness: async ({signal}) => { observedSignal = signal; return { closed: Promise.resolve(), close: async () => {} }; },
+  createClient: () => ({
+    on(method, handler) { assert.equal(method, 'elicitation/create'); elicitationHandler = handler; },
+    initialization: { protocolVersion: 1 },
+    connect: async () => {
+      assert.equal(typeof elicitationHandler, 'function');
+      const hostile = new Proxy({}, { get() { untouchedRequest++; throw Error('PRIVATE_SECRET'); } });
+      assert.deepEqual(elicitationHandler(hostile), { action: 'cancel' });
+      assert.equal(observedSignal.aborted, true);
+    },
+    close: async () => {}
+  })
+}));
+assert.equal(untouchedRequest, 0);
+assert.equal(elicitation.elicitation_seen, 1);
+assert.equal(elicitation.failure_stage, 4);
+assert.equal(elicitation.connect_returned, true);
+assert.equal(elicitation.success, false);
+assert.equal(elicitation.client_closed, true);
+assert.equal(elicitation.harness_settled, true);
+count++;
+let lateElicitation;
+const elicitationDuringClose = await runHandshake(async () => ({
+  createHarness: async () => ({ closed: Promise.resolve(), close: async () => {} }),
+  createClient: () => ({ on(_method, handler) { lateElicitation = handler; },
+    initialization: { protocolVersion: 1 }, connect: async () => {},
+    close: async () => { assert.deepEqual(lateElicitation(), { action: 'cancel' }); } })
+}));
+assert.equal(elicitationDuringClose.elicitation_seen, 1);
+assert.equal(elicitationDuringClose.failure_stage, 4);
+assert.equal(elicitationDuringClose.error_class, 8);
+assert.equal(elicitationDuringClose.success, false);
 count++;
 let verifyClock = 0;
 const verifyExpired = await runHandshake(() => { blockedImport++; }, {

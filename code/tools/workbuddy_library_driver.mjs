@@ -10,17 +10,40 @@ import { createRequire } from 'node:module';
 const PUBLIC_SHA = '8bfbfd68b6f4c04c70a94e1943ecc2a391dd5618e4a1cff087f77ea9d5402733';
 const ASAR_SHA = 'dcabcd90f07a627a06f1fd55bc872a1c25a79aab43c3012930b6287840ab3d20';
 class Deadline extends Error {}
+const RPC_CODES = new Map([[-32700, 9], [-32600, 10], [-32601, 11], [-32602, 12], [-32603, 13], [-32000, 14], [-32800, 15], [-32001, 16], [-32002, 17]]);
+const ERROR_DETAILS = Object.freeze({
+  'Invalid Harness initialize response': 1,
+  'ACP SDK did not create its client context': 2,
+  'Client connect timed out': 3,
+  'Client closed': 4,
+  'Harness is closing': 5,
+  'Agent Harness connection is closed': 6,
+  'RPC transport is closed': 7,
+  'RPC transport failed': 8,
+  'Internal error': 9,
+  'Invalid params': 10,
+  'Executor-backed MCP requires elicitation.form and elicitation.url client capabilities': 11
+});
+function ownData(error, key) {
+  try {
+    if (error === null || (typeof error !== 'object' && typeof error !== 'function')) return undefined;
+    const descriptor = Object.getOwnPropertyDescriptor(error, key);
+    return descriptor && Object.hasOwn(descriptor, 'value') ? descriptor.value : undefined;
+  } catch { return undefined; }
+}
+export function classifyDetail(error) {
+  const message = ownData(error, 'message');
+  return typeof message === 'string' && Object.hasOwn(ERROR_DETAILS, message) ? ERROR_DETAILS[message] : 0;
+}
 const ERROR_CODES = Object.freeze({ ERR_MODULE_NOT_FOUND: 1, MODULE_NOT_FOUND: 2,
   ENOENT: 3, EACCES: 4, EPERM: 5, ERR_UNSUPPORTED_DIR_IMPORT: 6, ERR_UNKNOWN_FILE_EXTENSION: 7 });
 export function classifyError(error) {
-  // Never evaluate error.code, getters, message, stack, paths or string conversion.
-  try {
-    if (error === null || (typeof error !== 'object' && typeof error !== 'function')) return 8;
-    const descriptor = Object.getOwnPropertyDescriptor(error, 'code');
-    if (!descriptor || !Object.hasOwn(descriptor, 'value') || typeof descriptor.value !== 'string') return 8;
-    return Object.hasOwn(ERROR_CODES, descriptor.value) ? ERROR_CODES[descriptor.value] : 8;
-  } catch { return 8; }
+  // Only own data descriptors. No getters, stack, paths or string conversion.
+  const code = ownData(error, 'code');
+  if (typeof code === 'number') return RPC_CODES.get(code) ?? 8;
+  return typeof code === 'string' && Object.hasOwn(ERROR_CODES, code) ? ERROR_CODES[code] : 8;
 }
+
 const bounded = async (operation, ms, now = () => performance.now()) => {
   if (!Number.isFinite(ms) || ms <= 0) throw new Deadline();
   const end = now() + ms;
@@ -41,9 +64,9 @@ export async function runHandshake(loadApi, { configDir, verifyEntry, timeoutMs 
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 30000 ||
       !Number.isSafeInteger(cleanupMs) || cleanupMs < 1 || cleanupMs > 10000) throw new TypeError();
   const start = now();
-  const dto = { schema_version: 2, entry_verified: false, import_ok: false, harness_created: false, client_created: false, connected: false,
+  const dto = { schema_version: 3, entry_verified: false, import_ok: false, harness_created: false, client_created: false, connect_returned: false, connected: false,
     client_closed: false, harness_closed: false, harness_settled: false, success: false,
-    protocol_version: 0, failure_stage: 0, error_class: 0, elapsed_ms: 0 };
+    protocol_version: 0, failure_stage: 0, error_class: 0, error_detail: 0, elicitation_seen: 0, elapsed_ms: 0 };
   const controller = new AbortController();
   let harness, client, stage = 1;
   const remaining = () => {
@@ -77,19 +100,30 @@ export async function runHandshake(loadApi, { configDir, verifyEntry, timeoutMs 
     dto.harness_created = true;
     stage = 3;
     remaining();
-    client = api.createClient({ account: { mode: 'external' }, product: { mode: 'external' } });
-    if (!client || typeof client.connect !== 'function' || typeof client.close !== 'function') throw new TypeError();
+    client = api.createClient({ account: { mode: 'external' }, product: { mode: 'external' },
+      capabilities: { elicitation: { form: {}, url: {} } } });
+    if (!client || typeof client.connect !== 'function' || typeof client.close !== 'function' || typeof client.on !== 'function') throw new TypeError();
     dto.client_created = true;
+    // The pinned executor-backed MCP initialize contract requires both capabilities.
+    // No form/URL is opened, read or accepted. Any such request aborts this diagnostic.
+    client.on('elicitation/create', () => {
+      dto.elicitation_seen = 1;
+      controller.abort();
+      return { action: 'cancel' };
+    });
+    if (dto.elicitation_seen !== 0) throw new TypeError();
     remaining();
     stage = 4;
     await bounded(() => client.connect(harness, { timeoutMs: remaining() }), remaining(), now);
+    dto.connect_returned = true;
     remaining();
-    if (client.initialization?.protocolVersion !== 1) throw new TypeError();
+    if (dto.elicitation_seen !== 0 || client.initialization?.protocolVersion !== 1) throw new TypeError();
     dto.protocol_version = 1;
     dto.connected = true;
   } catch (error) {
     dto.failure_stage = error instanceof Deadline ? 7 : stage;
     dto.error_class = classifyError(error);
+    dto.error_detail = classifyDetail(error);
   } finally {
     if (dto.failure_stage !== 0) controller.abort();
     const cleanupEnd = now() + cleanupMs;
@@ -109,6 +143,7 @@ export async function runHandshake(loadApi, { configDir, verifyEntry, timeoutMs 
         if (dto.failure_stage === 0) {
           dto.failure_stage = error instanceof Deadline ? 7 : failure;
           dto.error_class = classifyError(error);
+          dto.error_detail = classifyDetail(error);
         }
       }
     };
@@ -119,13 +154,17 @@ export async function runHandshake(loadApi, { configDir, verifyEntry, timeoutMs 
     }
     dto.elapsed_ms = Math.min(120000, Math.max(0, Math.round(now() - start)));
   }
+  if (dto.elicitation_seen !== 0 && dto.failure_stage === 0) {
+    dto.failure_stage = 4;
+    dto.error_class = 8;
+  }
   dto.success = complete(dto);
   return dto;
 }
 
 export function complete(dto) {
-  return dto.failure_stage === 0 && dto.error_class === 0 && dto.protocol_version === 1 &&
-    ['entry_verified', 'import_ok', 'harness_created', 'client_created', 'connected', 'client_closed', 'harness_closed', 'harness_settled']
+  return dto.failure_stage === 0 && dto.error_class === 0 && dto.error_detail === 0 && dto.elicitation_seen === 0 && dto.protocol_version === 1 &&
+    ['entry_verified', 'import_ok', 'harness_created', 'client_created', 'connect_returned', 'connected', 'client_closed', 'harness_closed', 'harness_settled']
       .every(key => dto[key] === true);
 }
 
