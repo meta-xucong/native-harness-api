@@ -7,7 +7,7 @@ const options = extra => ({verifyEntry:async()=>{},verifyEmptyRoots:async()=>tru
 function fixture(failure='') {
   const calls=[];let elicitation,signal;
   const harness={closed:Promise.resolve(),close:async()=>{calls.push('harness.close');if(failure==='harness.close')throw Error('PRIVATE_SECRET');}};
-  const client={initialization:{protocolVersion:1,authMethods:[{type:'agent',methodId:'workbuddy-desktop',providerType:'account-scoped-external-link'}]},
+  const client={initialization:{protocolVersion:1,authMethods:[{type:'agent',methodId:'workbuddy-desktop',name:'TencentCloud',description:null}]},
     on(method,handler){assert.equal(method,'elicitation/create');elicitation=handler;},
     async connect(h){calls.push('connect');assert.equal(h,harness);if(failure==='connect')throw Error('PRIVATE_SECRET');if(failure==='elicitation'){assert.deepEqual(elicitation(new Proxy({},{get(){throw Error('must not inspect');}})),{action:'cancel'});assert.equal(signal.aborted,true);}},
     product:{read:async(params,opts)=>{assert.deepEqual(params,{});assert.ok(opts.cancellationSignal instanceof AbortSignal);assert.equal(Object.hasOwn(opts,'signal'),false);calls.push('product.read');return failure==='identity'?{...publicProduct,productName:'CodeBuddy'}:publicProduct;}},
@@ -15,7 +15,15 @@ function fixture(failure='') {
     auth:{status:async(params,opts)=>{assert.deepEqual(params,{});assert.ok(opts.cancellationSignal instanceof AbortSignal);assert.equal(Object.hasOwn(opts,'signal'),false);calls.push('auth.status');return{authenticated:failure==='status'};}},
     close:async()=>{calls.push('client.close');if(failure==='close.elicitation')elicitation();if(failure==='client.close')throw Error('PRIVATE_SECRET');}
   };
-  if(failure==='catalog')client.initialization.authMethods[0].providerType='cli-external-link';
+  const method=client.initialization.authMethods[0];
+  if(failure==='catalog')method.methodId='codebuddy';
+  if(failure==='catalog.label')method.name='CodeBuddy';
+  if(failure==='catalog.type')method.type='token';
+  if(failure==='catalog.description')method.description='synthetic';
+  if(failure==='catalog.extra')method.providerType='account-scoped-external-link';
+  if(failure==='catalog.internal')client.initialization.authMethods=[{type:'agent',methodId:'workbuddy-desktop',providerType:'account-scoped-external-link'}];
+  if(failure==='catalog.empty')client.initialization.authMethods=[];
+  if(failure==='catalog.duplicate')client.initialization.authMethods.push({...method});
   if(failure==='protocol')client.initialization.protocolVersion=2;
   const load=async()=>{calls.push('load');if(failure==='import')throw Error('PRIVATE_SECRET');return{
     createHarness:async opts=>{calls.push('createHarness');assert.deepEqual(opts.productConfig,productConfig);assert.equal(opts.configDir,'/synthetic');assert.equal(opts.strictMcpConfig,true);signal=opts.signal;if(failure==='harness')throw Error('PRIVATE_SECRET');return harness;},
@@ -24,12 +32,13 @@ function fixture(failure='') {
   return{calls,load};
 }
 let count=0;
-for(const [failure,stage] of [['',0],['import',1],['harness',2],['client',3],['connect',4],['protocol',4],['elicitation',4],['identity',5],['catalog',6],['account',7],['status',8],['client.close',9],['harness.close',9],['close.elicitation',4],['account.deadline',10]]) {
+for(const [failure,stage] of [['',0],['import',1],['harness',2],['client',3],['connect',4],['protocol',4],['elicitation',4],['identity',5],['catalog',6],['catalog.label',6],['catalog.type',6],['catalog.description',6],['catalog.extra',6],['catalog.internal',6],['catalog.empty',6],['catalog.duplicate',6],['account',7],['status',8],['client.close',9],['harness.close',9],['close.elicitation',4],['account.deadline',10]]) {
  const f=fixture(failure);const dto=await runManagedCatalog(f.load,options({timeoutMs:failure==='account.deadline'?20:1000}));
  assert.equal(dto.failure_stage,stage,failure);assert.equal(dto.success,stage===0,failure);
  assert.equal(dto.native_account_verified,false);assert.equal(dto.real_model_ready,false);assert.ok(!JSON.stringify(dto).includes('PRIVATE_SECRET'));
  assert.ok(Object.values(dto).every(v=>typeof v==='boolean'||Number.isSafeInteger(v)));
  if(failure==='')assert.deepEqual(f.calls,['load','createHarness','createClient','connect','product.read','account.read','auth.status','client.close','harness.close']);
+ if(failure.startsWith('catalog'))assert.equal(f.calls.includes('account.read'),false);
  if(['account','catalog','identity','elicitation'].includes(failure))assert.equal(f.calls.includes('auth.status'),false);
  count++;
 }

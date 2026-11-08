@@ -18,8 +18,10 @@ The original runtime performs its own empty-account discovery.
 3. Register cancellation-only form/URL elicitation handling before connect. Any
    elicitation is sticky failure, not permission to continue.
 4. Initialize, read Product and verify WorkBuddy / WorkBuddy / 5.9.3 identity.
-5. Require exactly one advertised `agent` method with methodId
-   `workbuddy-desktop` and top-level providerType `account-scoped-external-link`.
+5. Require exactly one advertised method with the pinned public fields:
+   `type:agent`, `methodId:workbuddy-desktop`, `name:TencentCloud`,
+   `description:null`. Provider identity is separately verified from the full
+   pinned Product's `authentication.type:account-scoped-external-link`.
 6. Read account, requiring `unauthenticated` with null mode/account. Read auth
    status, requiring `authenticated:false`.
 7. Close Client and Harness, observe Harness settlement and owned process cleanup.
@@ -27,6 +29,14 @@ The original runtime performs its own empty-account discovery.
 Request options use the pinned SDK's `cancellationSignal`; connection and Harness
 startup use their own `signal` contracts. A request cancellation is not itself
 response settlement, so the independent deadline and owned cleanup remain required.
+
+The native Product Manager deliberately projects the public auth catalog to
+description/methodId/name/type, dropping internal providerType/loginType. The
+first hosted run (`e28faaf`, run 42437524509) verified managed initialization and
+WorkBuddy Product identity, then correctly stopped at our mistaken providerType
+assertion. Account/status were not called. That run closed all owned resources;
+it did not prove the unreported catalog fields or native authentication. This
+correction follows the pinned projection code, not a blanket relaxation.
 
 There is no auth/login, auth/logout, account/Product provisioning, workspace,
 session, tool or model request. Unexpected authenticated state is a failed test,

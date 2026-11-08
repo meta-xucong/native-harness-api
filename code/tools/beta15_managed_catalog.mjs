@@ -58,7 +58,11 @@ export async function runManagedCatalog(loadApi, { verifyEntry, loadProduct, ver
     const methods = client.initialization.authMethods;
     check(Array.isArray(methods) && methods.length === 1);
     const method = methods[0];
-    check(method?.type === 'agent' && method.methodId === 'workbuddy-desktop' && method.providerType === 'account-scoped-external-link'); dto.managed_catalog_verified = true;
+    // ProductManager.getAuthMethods deliberately projects only these four public fields.
+    check(method !== null && typeof method === 'object' && !Array.isArray(method) &&
+      Object.keys(method).sort().join(',') === 'description,methodId,name,type' &&
+      method.type === 'agent' && method.methodId === 'workbuddy-desktop' &&
+      method.name === 'TencentCloud' && method.description === null); dto.managed_catalog_verified = true;
     stage = 7; clean();
     const account = await bounded(() => client.account.read({}, {cancellationSignal:controller.signal}),remaining()); dto.account_read_returned = true; clean();
     check(account?.state === 'unauthenticated' && account.mode === null && account.account === null); dto.account_unauthenticated = true;
