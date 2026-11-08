@@ -1,4 +1,5 @@
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing
 from pathlib import Path
 import sqlite3
 import tempfile
@@ -28,7 +29,8 @@ class AdapterTests(unittest.TestCase):
   a=self.adapter(fail);self.assertEqual(a.start(task(),G)['outcome'],'pending');self.assertEqual(self.adapter().start(task(),G)['outcome'],'pending');self.assertEqual(self.calls,1);self.assertNotIn(b'secret',a.db.read_bytes())
  def test_crash_window(self):
   a=self.adapter();tid,gid,fp,_=a._identity(task(),G)
-  with sqlite3.connect(a.db) as db:db.execute('INSERT INTO evidence VALUES(?,?,?,NULL)',(gid,tid,fp))
+  with closing(sqlite3.connect(a.db)) as db:
+   db.execute('INSERT INTO evidence VALUES(?,?,?,NULL)',(gid,tid,fp));db.commit()
   self.assertEqual(a.start(task(),G)['outcome'],'pending');self.assertEqual(self.calls,0)
  def test_changed_grant(self):
   a=self.adapter();a.start(task(),G)
@@ -84,9 +86,10 @@ class AdapterTests(unittest.TestCase):
  def test_preexisting_hardlink_not_modified(self):
   import os
   outside=self.root/'other.sqlite'
-  with sqlite3.connect(outside) as db:db.execute('CREATE TABLE sentinel(n INTEGER)')
+  with closing(sqlite3.connect(outside)) as db:
+   db.execute('CREATE TABLE sentinel(n INTEGER)');db.commit()
   os.link(outside,self.root/'sfe-evidence.sqlite')
   with self.assertRaises(ValueError):self.adapter()
-  with sqlite3.connect(outside) as db:self.assertEqual(db.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall(),[('sentinel',)])
+  with closing(sqlite3.connect(outside)) as db:self.assertEqual(db.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall(),[('sentinel',)])
  def test_failure_code(self):
   v=success();v['session']['failure_code']='protocol';self.assertEqual(project_result(v,'m')['outcome'],'pending')
