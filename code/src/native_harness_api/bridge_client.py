@@ -10,7 +10,7 @@ import re
 import urllib.error
 import urllib.parse
 import urllib.request
-from .contracts import CONTRACT, MAX_RESULT_BYTES, NodeOffer, canonical, identifier, parse_json
+from .contracts import CONTRACT, MAX_RESULT_WIRE_BYTES, NodeOffer, canonical, identifier, parse_json
 from .errors import ChannelError
 
 
@@ -35,12 +35,12 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
 
 
 class HTTPTransport:
-    def __init__(self, base_url, token, *, timeout=5, max_response=MAX_RESULT_BYTES + 128 * 1024):
+    def __init__(self, base_url, token, *, timeout=5, max_response=MAX_RESULT_WIRE_BYTES + 128 * 1024):
         self.base_url = origin(base_url)
         if (not isinstance(token, str) or not 16 <= len(token) <= 4096
                 or any(ord(c) < 33 or ord(c) > 126 for c in token)):
             raise ValueError("An explicit service credential is required")
-        if not 0 < timeout <= 60 or not 1 <= max_response <= 1024 * 1024:
+        if not 0 < timeout <= 60 or not 1 <= max_response <= MAX_RESULT_WIRE_BYTES + 128 * 1024:
             raise ValueError("Invalid transport limits")
         self.token, self.timeout, self.max_response = token, timeout, max_response
         self.opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
