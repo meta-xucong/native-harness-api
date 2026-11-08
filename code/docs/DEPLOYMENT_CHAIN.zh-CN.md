@@ -1,3 +1,5 @@
+> 新普通 OpenAI provider 入口见 [OPENAI_PROVIDER.md](OPENAI_PROVIDER.md)；下文专用 Sub2API 配置/接缝是旧模式，不是新入口的前置条件。当前增量证据见 [测试记录](OPENAI_PROVIDER_TESTS.md)。
+
 # 三仓部署链：VPS 服务，Windows 仅出站
 
 本文描述代码支持的部署组成，不代表已部署、已接通生产 404token 或已完成真实账号/模型验收。不要直接替换已有 Render Bridge 镜像、配置或数据库。新 Harness 必须使用独立 Bridge 数据目录：旧图像账本不能原地转为 Harness 账本。

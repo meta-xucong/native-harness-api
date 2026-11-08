@@ -1,3 +1,5 @@
+> 新普通 OpenAI provider 入口见 [OPENAI_PROVIDER.md](OPENAI_PROVIDER.md)；下文专用 Sub2API 配置/接缝是旧模式，不是新入口的前置条件。当前增量证据见 [测试记录](OPENAI_PROVIDER_TESTS.md)。
+
 > 后续真实增量扩展以 [native-events-v1](NATIVE_EVENT_STREAM.md) 为准；下文非流式为历史基线。
 
 # P1b 实现状态

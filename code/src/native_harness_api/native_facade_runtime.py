@@ -21,6 +21,7 @@ class NativeFacadeConfig:
     port: int = 8790
     wait_seconds: float = 10
     mode: str = "workbuddy_local_trial"
+    ingress: str = "native"
 
     @classmethod
     def from_value(cls, value):
@@ -52,7 +53,10 @@ class NativeFacadeConfig:
             raise ValueError('Inconsistent compatibility binding')
         if type(self.accepting_new) is not bool or type(self.port) is not int or not 1 <= self.port <= 65535:
             raise ValueError('Invalid admission or loopback port')
-        if type(self.wait_seconds) not in (int, float) or not 0 <= self.wait_seconds <= 30:
+        if self.ingress not in {"native", "openai"}:
+            raise ValueError("Unknown Facade ingress")
+        maximum_wait = 300 if self.ingress == "openai" else 30
+        if type(self.wait_seconds) not in (int, float) or not 0 <= self.wait_seconds <= maximum_wait:
             raise ValueError('Invalid bounded wait')
         names = (self.source_token_env, self.facade_token_env)
         if names[0] == names[1] or any(type(n) is not str or not re.fullmatch('[A-Z_][A-Z0-9_]*', n) for n in names):
@@ -71,6 +75,9 @@ class NativeFacadeConfig:
         if source == facade: raise ValueError('Distinct service credentials required')
         bridge = BridgeClient(self.bridge_url, source, self.ledger_instance)
         service = Service(self.source, bridge, {b.model_alias:b for b in self.configured_bindings}, self.accepting_new, self.owner)
+        if self.ingress == "openai":
+            from .openai_provider import OpenAIProvider
+            return OpenAIProvider({facade: service}, wait_seconds=self.wait_seconds, mode=self.mode)
         return Facade({facade: service}, wait_seconds=self.wait_seconds, mode=self.mode)
 
     def runner(self, environ=None):

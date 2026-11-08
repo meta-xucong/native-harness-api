@@ -21,12 +21,17 @@ SPEC_KEYS = {'bridge_origin', 'user_id', 'api_key_id', 'model_alias', 'native_mo
 V2_SPEC_KEYS = {"schema_version", "bridge_origin", "user_id", "api_key_id",
                 "windows_data_dir", "bridge_data_dir", "targets"}
 
+PROVIDER_SPEC_KEYS = (V2_SPEC_KEYS - {"user_id", "api_key_id"}) | {"ingress"}
+
 
 def build_plan(spec, identities=None):
     multi_keys = (SPEC_KEYS - {'model_alias', 'native_model'}) | {'models'}
-    if type(spec) is not dict or set(spec) not in (SPEC_KEYS, multi_keys, V2_SPEC_KEYS):
+    if type(spec) is not dict or set(spec) not in (SPEC_KEYS, multi_keys, V2_SPEC_KEYS, PROVIDER_SPEC_KEYS):
         raise ValueError('Exact deployment specification required')
-    v2 = set(spec) == V2_SPEC_KEYS
+    provider = set(spec) == PROVIDER_SPEC_KEYS
+    if provider and spec["ingress"] != "openai":
+        raise ValueError("Explicit OpenAI provider ingress required")
+    v2 = provider or set(spec) == V2_SPEC_KEYS
     if v2 and (type(spec['schema_version']) is not int or spec['schema_version'] != 2):
         raise ValueError('Explicit schema version 2 required')
     mode = 'harness_local_trial' if v2 else 'workbuddy_local_trial'
@@ -34,9 +39,10 @@ def build_plan(spec, identities=None):
     parsed = urlsplit(remote)
     if parsed.scheme != 'https' or not parsed.hostname or parsed.hostname in ('localhost', '127.0.0.1', '::1'):
         raise ValueError('Windows requires a trusted reachable HTTPS Bridge origin')
-    for key in ('user_id', 'api_key_id'):
-        if type(spec[key]) is not int or not 0 < spec[key] < 2**63:
-            raise ValueError('Actual positive numeric Sub2API IDs required')
+    if not provider:
+        for key in ('user_id', 'api_key_id'):
+            if type(spec[key]) is not int or not 0 < spec[key] < 2**63:
+                raise ValueError('Actual positive numeric Sub2API IDs required')
     if v2:
         targets = parse_targets(spec['targets'])
         node_data = profile_path(spec['windows_data_dir'])
@@ -72,13 +78,16 @@ def build_plan(spec, identities=None):
             ('binding-'+digest({'seed':identities['binding'],'alias':m['model_alias']})[:32]) if multi else identities['binding'],
             1, m['model_alias'], m['native_model']) for m in models))
     binding_wires = [b.wire() for b in bindings]
-    owner = ['user-'+str(spec['user_id']), 'key-'+str(spec['api_key_id'])]
+    owner = (['provider', identities['source']] if provider else
+             ['user-'+str(spec['user_id']), 'key-'+str(spec['api_key_id'])])
     common = {'mode':mode, 'source':identities['source'], 'ledger_instance':identities['ledger'],
               'bridge_url':remote, 'owner':owner, 'accepting_new':False}
     common.update({'bindings':binding_wires} if multi else {'binding':binding_wires[0]})
     if v2:
         common['schema_version'] = 2
     facade = dict(common, adapter='facade_only', port=8790)
+    if provider:
+        facade.update(ingress='openai', wait_seconds=180)
     NativeFacadeConfig.from_value(facade)
     if v2:
         node = {k:v for k,v in common.items() if k != 'bindings'}
@@ -92,17 +101,34 @@ def build_plan(spec, identities=None):
               'host':'127.0.0.1', 'port':8787, 'dispatch_mode':'node_pull', 'enabled_profiles':['fake-image'],
               'accepting_new_tasks':False, 'harness':{'ledger_instance':identities['ledger'], 'allowed_owners':[owner],
               'bindings':binding_wires, 'accepting_new':False, 'execution_mode':mode}}
-    routes = {}
-    for binding in binding_wires:
-        routes[binding['model_alias']] = {'execution_mode':mode,'origin':'http://127.0.0.1:8790',
-             'credential_env':'NATIVE_FACADE_SERVICE_TOKEN','source':identities['source'],
-             'ledger_instance':identities['ledger'], **binding}
-    sub2api = {'gateway':{'native_harness':{'enabled':True,'accepting_new':False,'standard_api':False,'standard_wait_seconds':180,'allowed_user_id':spec['user_id'],
-               'allowed_api_key_id':spec['api_key_id'],'routes':routes}}}
-    return {'bridge.json':bridge, 'facade.json':facade, 'windows-node.json':node,
-            'sub2api.native-harness.yaml':sub2api,
+    plan = {'bridge.json':bridge, 'facade.json':facade, 'windows-node.json':node,
             'deployment-identities.json':{'schema_version':2 if v2 else 1, 'identities':identities, 'specification':spec,
              'warning':'Preserve this identity set and the existing Bridge/Sub2API/Node ledgers. Never regenerate to retry an uncertain operation.'}}
+    if provider:
+        plan['openai-provider.json'] = {
+            'kind':'operator-setup-instructions-not-account-import',
+            'platform':'openai', 'type':'apikey',
+            'base_url':'https://YOUR-PROVIDER-HOST/v1',
+            'local_listener':'http://127.0.0.1:8790/v1',
+            'api_key_source_env':'NATIVE_FACADE_TOKEN',
+            'extra':{'openai_responses_mode':'force_chat_completions'},
+            'model_mapping':{b.model_alias:b.model_alias for b in bindings},
+            'notes':[
+                'Use an operator-configured HTTPS URL reachable from Sub2API; its container loopback is not the host.',
+                'Set the provider account API key to the existing Facade token; no credential was generated or stored.',
+                'One trusted resource domain, non-billing trial only. Missing usage is unknown, not zero consumption.',
+                'Sub2API does not forward Idempotency-Key. Disable SDK automatic retries; gateway retries can still execute again.',
+                'Admission remains disabled. Follow OPENAI_PROVIDER.md; do not migrate or reset existing task state.'
+            ]}
+    else:
+        routes = {}
+        for binding in binding_wires:
+            routes[binding['model_alias']] = {'execution_mode':mode,'origin':'http://127.0.0.1:8790',
+                 'credential_env':'NATIVE_FACADE_SERVICE_TOKEN','source':identities['source'],
+                 'ledger_instance':identities['ledger'], **binding}
+        plan['sub2api.native-harness.yaml'] = {'gateway':{'native_harness':{'enabled':True,'accepting_new':False,'standard_api':False,'standard_wait_seconds':180,'allowed_user_id':spec['user_id'],
+                   'allowed_api_key_id':spec['api_key_id'],'routes':routes}}}
+    return plan
 
 
 def write_plan(output, plan):
