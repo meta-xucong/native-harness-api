@@ -6,6 +6,8 @@ on:
       - 'code/src/native_harness_api/**'
       - 'code/tools/public_harness_login*.py'
       - 'code/tools/public_harness_models.py'
+      - 'code/tools/public_harness_preflight.py'
+      - 'code/docs/DEPLOYMENT_CHAIN.zh-CN.md'
       - 'code/tools/public_harness_runtime_assets.py'
       - 'code/packaging/build_client.py'
       - 'code/packaging/client.py'
@@ -72,9 +74,11 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           & "$root/unpacked/runtime/python.exe" -I "$root/unpacked/client.py" login --explain
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & "$root/unpacked/runtime/python.exe" -I "$root/unpacked/client.py" preflight --help
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           & "$root/unpacked/runtime/python.exe" -I "$root/unpacked/client.py" node --help
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          & "$root/unpacked/runtime/python.exe" -I -c "import sys;sys.path[:0]=[sys.argv[1]+'/src',sys.argv[1]+'/tools'];import native_harness_api.native_trial_runtime;import public_harness_login;import public_harness_login_profile;import public_harness_models" "$root/unpacked"
+          & "$root/unpacked/runtime/python.exe" -I -c "import sys;sys.path[:0]=[sys.argv[1]+'/src',sys.argv[1]+'/tools'];import native_harness_api.native_trial_runtime;import public_harness_login;import public_harness_login_profile;import public_harness_models;import public_harness_preflight;import native_harness_api.native_facade_runtime" "$root/unpacked"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           & "$root/unpacked/runtime/python.exe" -I "$root/unpacked/client.py" verify-assets
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

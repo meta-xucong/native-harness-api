@@ -4,7 +4,7 @@
   "source": "<copy-source-from-bridge>",
   "ledger_instance": "<copy-ledger-from-bridge>",
   "bridge_url": "https://your-authorized-bridge.example",
-  "owner": ["<sub2api-user-id>", "<sub2api-key-id>"],
+  "owner": ["user-<numeric-sub2api-user-id>", "key-<numeric-sub2api-key-id>"],
   "binding": {
     "binding_id": "<matching-binding-id>",
     "revision": 1,

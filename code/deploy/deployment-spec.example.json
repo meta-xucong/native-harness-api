@@ -1,0 +1,10 @@
+{
+  "bridge_origin": "https://bridge.your-authorized-domain.example",
+  "user_id": 7,
+  "api_key_id": 9,
+  "model_alias": "workbuddy-your-model",
+  "native_model": "<copy-exact-id-from-Client-models>",
+  "windows_bundle_root": "C:/NativeHarness",
+  "windows_profile_root": "C:/YourProfiles/profile-returned-by-login",
+  "bridge_data_dir": "/var/lib/native-harness-bridge"
+}

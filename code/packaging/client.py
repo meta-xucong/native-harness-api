@@ -12,7 +12,7 @@ def main(argv=None):
     root = Path(__file__).resolve().parent
     sys.path[:0] = [str(root / 'src'), str(root / 'tools')]
     parser = Parser(description='Native Harness local client. Explicit commands only.')
-    parser.add_argument('command', choices=('login', 'models', 'node', 'facade', 'verify-assets'))
+    parser.add_argument('command', choices=('login', 'models', 'node', 'facade', 'preflight', 'verify-assets'))
     argv = list(sys.argv[1:] if argv is None else argv)
     args = parser.parse_args(argv[:1])
     remaining = argv[1:]
@@ -28,6 +28,9 @@ def main(argv=None):
         else:
             from public_harness_models import main as entry
         return entry(['--assets-root', str(root / 'assets'), *remaining])
+    if args.command == 'preflight':
+        from public_harness_preflight import main as entry
+        return entry(remaining)
     if args.command == 'verify-assets':
         if remaining: parser.error('verify-assets takes no parameters')
         from public_harness_runtime_assets import verify_runtime_assets

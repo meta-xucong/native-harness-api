@@ -44,6 +44,9 @@ class RuntimeConfig:
         with Path(path).open("rb") as handle:
             value = parse_json(handle.read(65_537))
         if isinstance(value, dict) and value.get("mode") == "workbuddy_local_trial":
+            if value.get("adapter") == "facade_only":
+                from .native_facade_runtime import NativeFacadeConfig
+                return NativeFacadeConfig.from_value(value)
             from .native_trial_runtime import NativeTrialConfig
             return NativeTrialConfig.from_value(value)
         if not isinstance(value, dict) or value.pop("mode", None) != "p1b_integration":

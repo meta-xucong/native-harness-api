@@ -14,7 +14,7 @@ from public_harness_runtime_assets import verify_runtime_assets
 from public_harness_catalog_assets import tree_digest, regular, member_parts, validate_inventory, SFE_TREE, NODE_TREE, OVERLAY_SHA
 from build import runtime_files, read_regular, digest
 
-TOOLS = ('public_harness_models.py', 'public_harness_login.py', 'public_harness_login_profile.py', 'public_harness_login_protocol.py',
+TOOLS = ('public_harness_preflight.py', 'public_harness_models.py', 'public_harness_login.py', 'public_harness_login_profile.py', 'public_harness_login_protocol.py',
          'public_harness_runtime_assets.py', 'public_harness_catalog_assets.py', 'public_harness_catalog_protocol.py')
 PACKAGING = ('client.py', 'Client.cmd', 'CLIENT-README.zh-CN.md', 'client-config.example.json')
 
@@ -33,6 +33,7 @@ def sources(code, revision):
     selected = [(p, p[len('code/'):]) for p in tracked if p.endswith('.py') and '/__pycache__/' not in p]
     selected += [('code/tools/'+n,'tools/'+n) for n in TOOLS]
     selected += [('code/packaging/'+n,n) for n in PACKAGING]
+    selected += [('code/docs/DEPLOYMENT_CHAIN.zh-CN.md','DEPLOYMENT_CHAIN.zh-CN.md')]
     required = ['code/packaging/build_client.py','code/packaging/build.py']
     for path in [p for p,_ in selected]+required:
         if read_regular(root/path) != git('show',revision+':'+path):

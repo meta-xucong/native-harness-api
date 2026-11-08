@@ -33,3 +33,8 @@ class ClientLauncherTests(unittest.TestCase):
  def test_models_override_rejected(self):
   with contextlib.redirect_stderr(io.StringIO()),self.assertRaises(SystemExit) as e:client.main(['models','--assets-root=C:/bad'])
   self.assertEqual(e.exception.code,2)
+
+ def test_preflight_forwards_without_runtime_start(self):
+  seen=[];module=types.SimpleNamespace(main=lambda args:seen.append(args) or 0)
+  with patch.dict(sys.modules,{'public_harness_preflight':module}):self.assertEqual(client.main(['preflight','--config','C:/node.json']),0)
+  self.assertEqual(seen,[['--config','C:/node.json']])
