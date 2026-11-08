@@ -88,3 +88,42 @@ Exact six-file freeze requires independent review before commit/push/execution.
 Only self-authored fixtures and offline tests may run before that review. An import
 success or empty-account handshake is not proof of account reuse, model inference,
 or production readiness. OwnedWindowsJob is lifecycle containment, not a sandbox.
+
+## Loader revision 3: separate physical and virtual filesystem APIs
+
+Revision 2 at `1e106e5470c9621f48b9c805135188aa824bae86` completed its one
+hosted attempt. Parent preflight passed, but the native child exited nonzero with
+no valid DTO (stdin/stdout 0 bytes, discarded stderr 158 bytes). The owned Job was
+naturally empty and all cleanup checks passed. The result does not locate the
+child failure or prove whether import/handshake occurred. No raw error was saved.
+
+A source-level defect was then established independently of that unknown runtime
+error. The pinned executable contains Electron/37.10.3. Its matching upstream
+`asar-fs-wrapper.ts` and `Archive::Stat` treat the archive root as a virtual
+directory. Revision 2 incorrectly used that patched filesystem to demand a
+physical regular file and read the whole archive checksum. The versioned
+[Electron documentation](https://github.com/electron/electron/blob/v37.10.3/docs/tutorial/asar-archives.md#treating-an-asar-archive-as-a-normal-file)
+explicitly specifies built-in `original-fs` for whole-archive checksum reads.
+
+Revision 3 requires that exact Electron runtime version and resolves only its
+built-in `original-fs`. Physical path/type/link checks, physical entry/archive
+hashes, and output reservation use its unpatched APIs. Only the virtual entry
+read uses ASAR-aware `node:fs`; import still uses the same pinned virtual URL.
+No global `process.noAsar` switch, loader patch, dependency copy, or vendor-byte
+change is introduced. Physical checks now run inside the bounded pre-import
+verification operation after safe output reservation, so caught verification
+failures can produce the existing schema-2 DTO rather than bypassing it.
+
+The fixed new root is `RUNNER_TEMP/native-harness-library-original-fs-once`;
+the sole summary/artifact is `library-original-fs-sanitized-summary.json` /
+`library-original-fs-sanitized-summary`. Parent metadata records loader_revision=3.
+The earlier consumed run roots are not reused. The controller still calls only
+one external initialize/initialized connection and close, without account,
+session, model, or prompt APIs. This changed experiment requires its own exact
+source/command review before publication and one new hosted attempt. At this
+source checkpoint it is not yet executed. No local-PC run is authorized.
+
+Self-authored fixtures distinguish physical file versus virtual directory,
+exercise separate byte readers, reject mismatches/missing API objects, and prove
+that failed physical verification blocks import and returns a finite failure.
+They do not substitute for actual Electron or WorkBuddy execution.

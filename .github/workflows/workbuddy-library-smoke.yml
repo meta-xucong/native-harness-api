@@ -1,4 +1,4 @@
-name: WorkBuddy virtual ASAR library handshake diagnostic
+name: WorkBuddy original-fs ASAR library handshake diagnostic
 on:
   push:
     paths:
@@ -32,22 +32,22 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python -m unittest discover -s tests -v
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: Exactly one isolated virtual ASAR library handshake and close
+      - name: Exactly one isolated original-fs ASAR library handshake and close
         shell: pwsh
         env:
           PYTHONPATH: code/src
         run: |
           $sevenZip = Join-Path $env:ProgramFiles '7-Zip/7z.exe'
           if (-not (Test-Path -LiteralPath $sevenZip -PathType Leaf)) { throw 'RUNNER_7ZIP_MISSING' }
-          $runRoot = Join-Path $env:RUNNER_TEMP 'native-harness-library-asar-once'
-          $summary = Join-Path $env:GITHUB_WORKSPACE 'library-asar-sanitized-summary.json'
+          $runRoot = Join-Path $env:RUNNER_TEMP 'native-harness-library-original-fs-once'
+          $summary = Join-Path $env:GITHUB_WORKSPACE 'library-original-fs-sanitized-summary.json'
           python code/tools/official_workbuddy_library.py --seven-zip "$sevenZip" --run-root "$runRoot" --summary "$summary"
           exit $LASTEXITCODE
       - name: Sanitized own summary only
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
-          name: library-asar-sanitized-summary
-          path: library-asar-sanitized-summary.json
+          name: library-original-fs-sanitized-summary
+          path: library-original-fs-sanitized-summary.json
           if-no-files-found: warn
           retention-days: 7

@@ -226,8 +226,8 @@ def main(argv=None):
     try:
         require(os.name=='nt' and os.environ.get('GITHUB_ACTIONS')=='true' and os.environ.get('RUNNER_ENVIRONMENT')=='github-hosted')
         require(args.run_root.is_absolute() and args.summary.is_absolute())
-        require(args.run_root==Path(os.environ['RUNNER_TEMP'])/'native-harness-library-asar-once')
-        require(args.summary==Path(os.environ['GITHUB_WORKSPACE'])/'library-asar-sanitized-summary.json')
+        require(args.run_root==Path(os.environ['RUNNER_TEMP'])/'native-harness-library-original-fs-once')
+        require(args.summary==Path(os.environ['GITHUB_WORKSPACE'])/'library-original-fs-sanitized-summary.json')
         ancestors(args.run_root.parent); ancestors(args.summary.parent); require(not args.summary.exists())
         report['preflight_stage']=2
         args.run_root.mkdir()
@@ -249,7 +249,7 @@ def main(argv=None):
         command=[str(executable),str(driver),'--package-root',str(package),'--run-root',str(args.run_root)]
         report['preflight_stage']=6
         report=collect(supervise(command,workspace,env),output,trusted); report['preflight']=True; report['preflight_stage']=0
-        report['loader_revision']=2; report['archive_pair_verified']=True
+        report['loader_revision']=3; report['archive_pair_verified']=True
     except (Exception,KeyboardInterrupt): pass
     # Reconstructed own DTO only; no raw strings or errors.
     try:

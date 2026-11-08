@@ -1,6 +1,10 @@
 /** All APIs here are self-authored fakes. No vendor package is imported. */
 import assert from 'node:assert/strict';
-import { runHandshake as actualHandshake, complete, classifyError } from '../../tools/workbuddy_library_driver.mjs';
+import * as fs from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { createHash } from 'node:crypto';
+import { runHandshake as actualHandshake, complete, classifyError, verifyPhysicalFile, verifyVirtualFile } from '../../tools/workbuddy_library_driver.mjs';
 
 const runHandshake = (load, options = {}, clock) => actualHandshake(load, { verifyEntry: async () => {}, ...options }, clock);
 
@@ -147,4 +151,46 @@ const verifyExpired = await runHandshake(() => { blockedImport++; }, {
 assert.equal(verifyExpired.failure_stage, 7);
 assert.equal(verifyExpired.entry_verified, false);
 assert.equal(blockedImport, 0); count++;
+
+// Self-authored bytes only. Electron's documented virtual stat semantics are
+// represented explicitly: a .asar root is a directory, not its physical file.
+const folder = await fs.mkdtemp(path.join(tmpdir(), 'synthetic-asar-fs-'));
+try {
+  const archive = path.join(folder, 'synthetic.asar');
+  const backing = path.join(folder, 'synthetic-entry.js');
+  const bytes = Buffer.from('synthetic archive bytes, not vendor code');
+  const digest = createHash('sha256').update(bytes).digest('hex');
+  await fs.writeFile(archive, bytes, { flag: 'wx' });
+  await fs.writeFile(backing, bytes, { flag: 'wx' });
+  let virtualOpens = 0;
+  const virtual = {
+    lstat: async value => value === archive
+      ? { isSymbolicLink: () => false, isFile: () => false, isDirectory: () => true }
+      : fs.lstat(value),
+    realpath: fs.realpath,
+    open: async value => {
+      virtualOpens++;
+      assert.equal(value, path.join(archive, 'lib', 'public.js'));
+      return fs.open(backing, 'r');
+    }
+  };
+  assert.equal(await verifyPhysicalFile(archive, digest, 1024, fs), bytes.length);
+  assert.equal(virtualOpens, 0); count++;
+  await assert.rejects(verifyPhysicalFile(archive, digest, 1024, virtual), TypeError);
+  assert.equal(virtualOpens, 0); count++;
+  await verifyVirtualFile(path.join(archive, 'lib', 'public.js'), digest, bytes.length, virtual);
+  assert.equal(virtualOpens, 1); count++;
+  await assert.rejects(verifyPhysicalFile(archive, '0'.repeat(64), 1024, fs), TypeError);
+  await assert.rejects(verifyVirtualFile(path.join(archive, 'lib', 'public.js'), digest, bytes.length + 1, virtual), TypeError);
+  await assert.rejects(verifyPhysicalFile(archive, digest, 1024, {}), TypeError); count++;
+  const f = fixture();
+  const rejectedPhysical = await runHandshake(f.load, {
+    verifyEntry: () => verifyPhysicalFile(archive, digest, 1024, virtual)
+  });
+  assert.equal(rejectedPhysical.failure_stage, 1);
+  assert.equal(rejectedPhysical.error_class, 8);
+  assert.equal(rejectedPhysical.entry_verified, false);
+  assert.equal(rejectedPhysical.import_ok, false);
+  assert.deepEqual(f.calls, []); count++;
+} finally { await fs.rm(folder, { recursive: true, force: true }); }
 console.log(`synthetic_node_driver_tests=${count}`);

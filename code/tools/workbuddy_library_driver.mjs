@@ -5,6 +5,7 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createHash } from 'node:crypto';
 import { performance } from 'node:perf_hooks';
+import { createRequire } from 'node:module';
 
 const PUBLIC_SHA = '8bfbfd68b6f4c04c70a94e1943ecc2a391dd5618e4a1cff087f77ea9d5402733';
 const ASAR_SHA = 'dcabcd90f07a627a06f1fd55bc872a1c25a79aab43c3012930b6287840ab3d20';
@@ -128,23 +129,23 @@ export function complete(dto) {
       .every(key => dto[key] === true);
 }
 
-async function physical(value, directory) {
+async function physical(value, directory, fs) {
   if (!path.isAbsolute(value) || path.resolve(value) !== value) throw new TypeError();
   for (let current = value;; current = path.dirname(current)) {
-    const info = await lstat(current);
+    const info = await fs.lstat(current);
     if (info.isSymbolicLink()) throw new TypeError();
     if (current === value && (directory ? !info.isDirectory() : !info.isFile())) throw new TypeError();
     if (path.dirname(current) === current) break;
   }
-  if ((await realpath(value)).toLowerCase() !== value.toLowerCase()) throw new TypeError();
+  if ((await fs.realpath(value)).toLowerCase() !== value.toLowerCase()) throw new TypeError();
 }
 function inside(root, value) {
   const relative = path.relative(root, value);
   if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) throw new TypeError();
 }
 
-async function verifyBytes(file, expectedHash, maximum, expectedSize) {
-  const source = await open(file, 'r');
+async function verifyBytes(file, expectedHash, maximum, expectedSize, fs) {
+  const source = await fs.open(file, 'r');
   try {
     const hash = createHash('sha256');
     const buffer = Buffer.alloc(1024 * 1024);
@@ -160,12 +161,32 @@ async function verifyBytes(file, expectedHash, maximum, expectedSize) {
   } finally { await source.close(); }
 }
 
+/** Physical bytes must never be read through Electron's ASAR virtual filesystem. */
+export async function verifyPhysicalFile(file, expectedHash, maximum, fs) {
+  await physical(file, false, fs);
+  const info = await fs.lstat(file);
+  if (info.nlink !== 1 || info.size > maximum) throw new TypeError();
+  await verifyBytes(file, expectedHash, maximum, info.size, fs);
+  return info.size;
+}
+
+export async function verifyVirtualFile(file, expectedHash, expectedSize, fs) {
+  await verifyBytes(file, expectedHash, 1024 * 1024, expectedSize, fs);
+}
+
 async function main(argv) {
   let output;
   try {
     if (process.platform !== 'win32' || process.env.GITHUB_ACTIONS !== 'true' ||
         process.env.RUNNER_ENVIRONMENT !== 'github-hosted') throw new TypeError();
     if (argv.length !== 4 || argv[0] !== '--package-root' || argv[2] !== '--run-root') throw new TypeError();
+    // Official Electron builtin only: no package fallback, global noAsar switch,
+    // monkeypatch or reconstructed dependency tree. Node fixture imports stay inert.
+    if (process.versions.electron !== '37.10.3') throw new TypeError();
+    const require = createRequire(import.meta.url);
+    if (require.resolve('original-fs') !== 'original-fs') throw new TypeError();
+    const physicalFs = require('original-fs').promises;
+    const virtualFs = { open, lstat, realpath };
     const packageRoot = argv[1], root = argv[3];
     const home = path.join(root, 'isolated', 'home');
     const config = path.join(root, 'isolated', 'config');
@@ -175,7 +196,7 @@ async function main(argv) {
     const archive = path.join(resources, 'app.asar');
     const entry = path.join(packageRoot, 'lib', 'public.js');
     const virtualEntry = path.join(archive, 'node_modules', '@genie', 'agent-harness', 'lib', 'public.js');
-    for (const value of [root, home, config, path.dirname(dto)]) await physical(value, true);
+    for (const value of [root, home, config, path.dirname(dto)]) await physical(value, true, physicalFs);
     for (const value of [home, config, dto, entry]) inside(root, value);
     if (home !== path.join(root, 'isolated', 'home') || config !== path.join(root, 'isolated', 'config') ||
         dto !== path.join(root, 'output', 'library-summary.json') ||
@@ -183,21 +204,17 @@ async function main(argv) {
         process.env.USERPROFILE !== home || process.env.HOME !== home ||
         process.env.CODEBUDDY_CONFIG_DIR !== config || process.env.WORKBUDDY_CONFIG_DIR !== config ||
         process.cwd() !== path.join(root, 'workspace')) throw new TypeError();
-    await physical(entry, false);
-    const info = await lstat(entry);
-    if (info.nlink !== 1 || info.size > 1024*1024) throw new TypeError();
-    await verifyBytes(entry, PUBLIC_SHA, 1024*1024, info.size);
-    await physical(archive, false);
-    const archiveInfo = await lstat(archive);
-    if (archiveInfo.nlink !== 1 || archiveInfo.size > 1024**3) throw new TypeError();
-    await verifyBytes(archive, ASAR_SHA, 1024**3, archiveInfo.size);
-    // Reserve output before vendor import. On any uncertain outcome it cannot be reused.
-    output = await open(dto, 'wx', 0o600);
+    // Reserve after path/environment validation, before checks that differ between
+    // physical and virtual filesystems. Their caught failures now produce a DTO.
+    output = await physicalFs.open(dto, 'wx', 0o600);
     const result = await runHandshake(() => import(pathToFileURL(virtualEntry).href), {
       configDir: config,
-      // Only the official runtime's built-in ASAR-aware fs is exercised here.
-      // No physical() relaxation, NODE_PATH, copied dependencies or loader patch.
-      verifyEntry: () => verifyBytes(virtualEntry, PUBLIC_SHA, 1024*1024, info.size)
+      verifyEntry: async () => {
+        const entrySize = await verifyPhysicalFile(entry, PUBLIC_SHA, 1024*1024, physicalFs);
+        await verifyPhysicalFile(archive, ASAR_SHA, 1024**3, physicalFs);
+        // Only this virtual entry uses Electron's ASAR-aware filesystem.
+        await verifyVirtualFile(virtualEntry, PUBLIC_SHA, entrySize, virtualFs);
+      }
     });
     await output.writeFile(JSON.stringify(result) + '\n');
     await output.sync();
