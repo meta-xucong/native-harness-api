@@ -10,6 +10,7 @@ on:
       - 'code/docs/DEPLOYMENT_CHAIN.zh-CN.md'
       - 'code/tools/public_harness_runtime_assets.py'
       - 'code/packaging/build_client.py'
+      - 'code/packaging/build_server.py'
       - 'code/packaging/client.py'
       - 'code/packaging/Client.cmd'
       - 'code/packaging/CLIENT-README.zh-CN.md'
