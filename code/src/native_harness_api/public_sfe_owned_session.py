@@ -153,6 +153,15 @@ class PublicSfeOwnedSession:
                 pass
         return True
 
+    def _stages(self, workspace, model_id, prompt):
+        """Internal extension seam; default execution contract remains unchanged."""
+        return [
+            (self.protocol.start, lambda: self.protocol.ready),
+            (lambda: self.protocol.new_session(workspace), lambda: self.protocol.coordinator.phase == 'created'),
+            (lambda: self.protocol.select_model(model_id), lambda: self.protocol.coordinator.phase == 'selected'),
+            (lambda: self.protocol.prompt(prompt), lambda: self.protocol.coordinator.phase == 'finished'),
+        ]
+
     def run(self, command, cwd, env, *, workspace, model_id, prompt,
             expected_account_digest, timeout=120, cleanup_timeout=10, cancellation=None):
         if self._attempted:
@@ -184,12 +193,7 @@ class PublicSfeOwnedSession:
             self._start_thread(self._read, self.transport.stderr, True)
             self._start_thread(self._write, self.transport.stdin)
             self._io_ready = True
-            stages = [
-                (self.protocol.start, lambda: self.protocol.ready),
-                (lambda: self.protocol.new_session(workspace), lambda: self.protocol.coordinator.phase == 'created'),
-                (lambda: self.protocol.select_model(model_id), lambda: self.protocol.coordinator.phase == 'selected'),
-                (lambda: self.protocol.prompt(prompt), lambda: self.protocol.coordinator.phase == 'finished'),
-            ]
+            stages = self._stages(workspace, model_id, prompt)
             for intent, ready in stages:
                 if cancellation is not None and cancellation.is_set():
                     self._fail('CANCEL_REQUESTED')

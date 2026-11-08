@@ -234,6 +234,38 @@ class LoginSupervisorTests(unittest.TestCase):
             self.assertNotIn('PRIVATE_ARG_TOKEN',err.getvalue()+out.getvalue())
             self.assertNotIn('--scripted',err.getvalue()+out.getvalue())
 
+    def test_cli_broken_output_still_holds_retained(self):
+        marker=object()
+        with patch.object(login,'RETAINED',[marker]),patch.object(login,'_hold_retained') as hold,patch('builtins.print',side_effect=BrokenPipeError('PRIVATE_OUTPUT')):
+            self.assertEqual(login.main(['--explain']),1)
+            hold.assert_called_once_with()
+            self.assertEqual(login.RETAINED,[marker])
+
+    def test_cli_parse_error_holds_without_echo_even_if_output_broken(self):
+        with patch.object(login,'RETAINED',[]),patch.object(login,'_hold_retained') as hold,patch('builtins.print',side_effect=BrokenPipeError()):
+            self.assertEqual(login.main(['--unknown','PRIVATE_TOKEN']),1)
+            hold.assert_called_once_with()
+            self.assertEqual(login.RETAINED,[])
+
+    def test_cli_normal_return_runs_common_hold(self):
+        with patch.object(login,'RETAINED',[]),patch.object(login,'_hold_retained') as hold,patch('sys.stdout',new=io.StringIO()):
+            self.assertEqual(login.main(['--explain']),0)
+            hold.assert_called_once_with()
+        with patch.object(login,'RETAINED',[]),patch.object(login.time,'sleep',side_effect=AssertionError('must not wait')):
+            login._hold_retained()
+
+    def test_hold_retained_ignores_keyboard_interrupt(self):
+        retained=[object()]
+        def tick(_):
+            if tick.first:
+                tick.first=False
+                raise KeyboardInterrupt()
+            retained.clear()
+        tick.first=True
+        with patch.object(login,'RETAINED',retained),patch.object(login.time,'sleep',side_effect=tick) as sleep:
+            login._hold_retained()
+            self.assertEqual(sleep.call_count,2)
+
     @unittest.skipUnless(os.name=='nt','Windows owned authored process only')
     def test_windows_authored_peer(self):
         with tempfile.TemporaryDirectory() as td:

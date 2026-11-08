@@ -347,6 +347,15 @@ class SafeParser(argparse.ArgumentParser):
         raise ValueError('ARGUMENTS_REJECTED')
 
 
+def _hold_retained():
+    """Preserve uncertain process ownership and profile locks, even if UI fails."""
+    while RETAINED:
+        try:
+            time.sleep(1)
+        except KeyboardInterrupt:
+            continue
+
+
 def main(argv=None):
     parser = SafeParser(description=__doc__)
     parser.add_argument('--explain', action='store_true')
@@ -376,14 +385,15 @@ def main(argv=None):
         print('Login confirmed and retained.' if result['success'] else 'Login not confirmed. Profile retained; no automatic retry, logout or deletion.')
         if not result['profile_closed']:
             print('Cleanup is uncertain. Keep this owner process open and resolve owned-process cleanup before reusing the profile.')
-            # Keep OS Job and profile lock alive; never imply a released owner.
-            while RETAINED:
-                try: time.sleep(1)
-                except KeyboardInterrupt: continue
         return 0 if result['success'] else 1
     except (Exception, KeyboardInterrupt):
-        print('Stopped safely; no automatic retry. Check the retained profile before another attempt.')
+        try:
+            print('Stopped safely; no automatic retry. Check the retained profile before another attempt.')
+        except (Exception, KeyboardInterrupt):
+            pass  # Broken output must not release an uncertain process owner.
         return 1
+    finally:
+        _hold_retained()
 
 
 if __name__ == '__main__':

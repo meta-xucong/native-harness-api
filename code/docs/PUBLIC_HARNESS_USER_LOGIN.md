@@ -83,3 +83,19 @@ ACL **不是原生凭据加密**。公开 beta16 的保护源码存在默认关�
 模型目录发现、模型选择、工具授权与实际 prompt 是后续由用户单独触发的操作。
 登录成功不自动批准任何工具，也不证明模型调用可用。开发测试不产生真实模型费用，
 未部署到用户电脑或 VPS。
+
+## 用户单独读取模型目录
+
+登录确认后，使用终端显示的新 profile 路径：
+
+```text
+python tools/public_harness_models.py --assets-root C:\WorkBuddyClient\assets --profile C:\WorkBuddyProfiles\workbuddy-managed-<id>
+```
+
+此命令实时核验账号后创建并关闭一个空原生 session，读取真实 `configOptions`，
+不选择模型、不发送 prompt，也不自动写绑定。空 session 仍可能初始化服务、缓存或
+网络，不是无副作用操作。只有自然退出及完整清理验证后才显示原生模型 ID；用户
+再选择一个精确 ID 填入本地配置的 `native_model`。目录存在不保证套餐、额度或模型
+调用成功。失败不自动重试，清理/状态不明时保留并隔离该 profile。
+
+开发期间只测试自写对端；**真实已登录模型目录及模型调用均为 NOT_RUN**。
