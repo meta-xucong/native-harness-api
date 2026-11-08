@@ -14,6 +14,7 @@ import time
 from .beta15_reducer import ContractError, check, snapshot
 from .beta15_session import SessionCoordinator, decode_frame
 from .beta16_events import Beta16EventProjector, ProjectionError
+from .usage_evidence import UsageEvidence
 
 
 def keys(v, required, optional=()):
@@ -109,6 +110,7 @@ class PublicSfeSession:
         self.coordinator = SessionCoordinator(deadline=deadline, clock=clock, on_event=on_event,
                                               reducer_max_events=max_frames, reducer_max_bytes=max_bytes)
         self.projector = Beta16EventProjector(max_events=max_frames, max_bytes=max_bytes)
+        self.usage_evidence = UsageEvidence(max_events=max_frames)
         self.max_frames, self.max_bytes = max_frames, max_bytes
         self.frames_received = self.bytes_received = self.frames_sent = 0
         self.failure_code = None
@@ -233,6 +235,7 @@ class PublicSfeSession:
             return self.fail('evidence_changed')
         check(not self.failure_code and self.ready and v['method'] == 'session/update' and self.tick())
         projected = self.projector.project(v['params'])
+        self.usage_evidence.observe(v['params'])
         if projected is not None:
             self.coordinator.update(projected)
             if self.coordinator.fault:
@@ -241,6 +244,11 @@ class PublicSfeSession:
 
     def evidence(self):
         result = self.coordinator.evidence()
+        reducer = self.coordinator.reducer
+        result['metering_evidence'] = self.usage_evidence.summary(
+            self.coordinator.session_id, None if reducer is None else reducer.run_id,
+            accepted=reducer is not None and reducer.insert_acknowledged,
+            terminal_observed=reducer is not None and reducer.evidence()['terminal_observed'])
         result.update(protocol_ready=self.ready, account_verified=self.ready and self._account,
                       failure_code=self.failure_code, frames_received=self.frames_received,
                       bytes_received=self.bytes_received, frames_sent=self.frames_sent,
