@@ -43,7 +43,7 @@ def _cleanup_projection(value):
 def finish_synthetic_fixture(folder, transport, original, *, mode="synthetic", owned=False, clock=time.monotonic,
                              sleep=time.sleep, emit=print):
     """Same-owner hygiene only; original observations remain authoritative."""
-    modes = {'synthetic', 'success', 'orphan', 'exit_nonzero', 'wrong_model', 'ack_only',
+    modes = {'transport-orphan', 'transport-tree', 'synthetic', 'success', 'orphan', 'exit_nonzero', 'wrong_model', 'ack_only',
              'bad_frame', 'oversized', 'stderr_overflow', 'shutdown_hang', 'late_conflict'}
     label = mode if type(mode) is str and mode in modes else 'unspecified'
     result = original if type(original) is dict else {}
