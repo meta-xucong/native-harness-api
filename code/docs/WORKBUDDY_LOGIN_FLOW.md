@@ -76,8 +76,11 @@ Windows ACL、浏览器 cookies 隔离或原生凭据加密。元数据中的相
 
 真实模式尚未接入，以下是**准备与授权清单，不是现在可执行的登录指令**：
 
-1. 核验完整官方 bundle、版本和区域。当前入口证据对应 CN WorkBuddy 5.9.3 /
-   beta15，不能移植几份库来冒充用户现有版本兼容。
+1. 核验完整官方来源、版本和区域。除早期 CN WorkBuddy 5.9.3 / beta15 桌面
+   库诊断外，固定官方 public beta16 SFE 配合 CN 5.9.3 Product 已通过云端
+   匿名入口，实际完成 Product/catalog/account/status 与自然退出。完整 pins、
+   run 和范围见 [公开 SFE 诊断证据](PUBLIC_HARNESS_CATALOG_DIAGNOSTIC.md)。
+   这不是登录、GUI 恢复、国际版或本机兼容证明，不能只移植几份库来冒充完整版本。
 2. 用户明确选择并批准具体测试账号与官方服务。使用独立、已核验的 OS/浏览器
    测试会话，不能复制现有账号目录、浏览器 cookies、tokens 或保护密钥。
 3. 用户明确批准新绝对存储路径、保留期限及实际保护方式。必须先核验 Windows
@@ -95,8 +98,10 @@ elicitation。Windows 使用系统 URL dispatch，没有已验证的独立浏览
 请求/浏览器动作或已持久化登录。
 
 现有 GUI 受保护账号没有已验证的公开交接契约；不能注入私有 bootstrap、伪造
-宿主身份或降级保护。原生 fresh-account 完整登录仍未验证，静态研究还留有
-provider 依赖装配待核问题。空账号目录实验通过不等于原生登录已可用。
+宿主身份或降级保护。旧桌面 beta15 provider 的依赖装配问题不能概括所有发布包；
+公开 beta16 源码在已识别的缺失依赖点使用不同路径，且其 SFE 匿名入口已实测。
+但原生 fresh-account 完整登录仍未执行，源码差异和空账号成功都不等于登录已可用。
+本向导继续拒绝 native 模式，不会自动改用新 SFE 或创建真实凭据目录。
 
 官方桌面登录指引：
 https://www.workbuddy.cn/docs/workbuddy/From-Beginner-to-Expert-Guide/Installation-Win-Guide

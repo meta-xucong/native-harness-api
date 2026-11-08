@@ -126,8 +126,21 @@ class LoginCliTests(unittest.TestCase):
         with contextlib.redirect_stdout(out), patch.object(cli, 'create_simulation_profile', side_effect=AssertionError()):
             code = cli.main(['--explain-real-test'])
         self.assertEqual(code, 0)
-        for phrase in ['默认浏览器', '存储', '模型', '未接入']:
+        for phrase in ['默认浏览器', '存储', '模型', '未接入', 'public beta16 SFE',
+                       '已通过云端匿名入口', '不证明真实登录', '完整登录仍未执行']:
             self.assertIn(phrase, out.getvalue())
+        self.assertEqual(list(self.parent.iterdir()), [])
+
+    def test_anonymous_evidence_does_not_enable_native_mode_via_explanation(self):
+        out, err = io.StringIO(), io.StringIO()
+        with patch.object(cli, 'create_simulation_profile', side_effect=AssertionError()), \
+             patch.object(cli, 'run_simulation', side_effect=AssertionError()), \
+             contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = cli.main(['--mode', 'native', '--explain-real-test', '--scripted',
+                             '--profile-parent', str(self.parent)])
+        self.assertEqual(code, 2)
+        self.assertEqual(out.getvalue(), '')
+        self.assertIn('NATIVE_LOGIN_NOT_AVAILABLE', err.getvalue())
         self.assertEqual(list(self.parent.iterdir()), [])
 
     def test_invalid_choice_after_profile_preserves_it_without_echo(self):
