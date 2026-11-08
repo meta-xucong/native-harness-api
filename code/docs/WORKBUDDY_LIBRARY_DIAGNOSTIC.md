@@ -1,8 +1,8 @@
-# Review-only root beta.15 library handshake
+# Review-only root beta.15 virtual-ASAR library handshake
 
 New separate controller, not a retry of the CLI or installed diagnostic. Do not
 publish or execute official runtime until exact source/command independent review.
-No local PC permission is implied. Existing tools/workflows remain unchanged.
+No local PC permission is implied. Old CLI smoke/profile workflows remain unchanged; only the dedicated library workflow is updated.
 
 Pinned root @genie/agent-harness 0.2.0-beta.15 comes from the existing verified
 WorkBuddy 5.9.3 installer/payload (not npm or a nested CLI copy). The complete
@@ -50,4 +50,41 @@ Offline Python fixtures and self-written Node fake-API tests precede any vendor
 attempt. Real Windows lifecycle prerequisites must pass separately; Linux skips
 are not Windows evidence. The new push-only workflow filters only new library files, and requires Node fake
 fixtures plus full Windows tests before one attempt. Merely writing it is not
-execution permission; no push/CI has occurred at this review checkpoint.
+execution permission; This corrected virtual-ASAR revision has not been published or executed.
+
+
+## Loader revision 2: virtual ASAR (one new bounded attempt)
+
+The historical physical-entry trial (source 79fb80a) failed during import in about
+146 ms, before harness/client construction. Its raw exception was intentionally
+not retained; do not label it an established module-not-found error. Preserve its
+source and artifact unchanged. Static evidence found bare dependencies packed in
+app.asar, absent from the physical app.asar.unpacked sibling tree. Native GUI uses
+a package-name import within the virtual archive context.
+
+This revision keeps the pinned 6166-file tree and executable pins unchanged. The
+controller additionally verifies the full app.asar SHA256, bounded pickle/JSON
+header, and exact public.js/package.json unpacked flags, sizes and integrity hashes
+against paired physical bytes. The Node driver verifies virtual entry bytes with
+the official runtime's built-in filesystem before importing the fixed ASAR URL.
+No NODE_PATH, copied dependencies, loader patches, vendor changes or reconstruction.
+
+Only the existing library workflow is changed. Fixed run root:
+RUNNER_TEMP/native-harness-library-asar-once. Fixed public artifact/summary:
+library-asar-sanitized-summary / library-asar-sanitized-summary.json.
+The child-only file remains output/library-summary.json. Existing directories or
+outputs consume the attempt; no retry, changed tag, fallback loader or local-PC run.
+
+DTO schema 2 adds entry_verified and numeric error_class. Only allowlisted own data
+error.code values map to classes 1..7; other failures map to 8, success to 0.
+No message, stack, exception paths, tokens or vendor output are emitted. Classes:
+1 ERR_MODULE_NOT_FOUND, 2 MODULE_NOT_FOUND, 3 ENOENT, 4 EACCES, 5 EPERM,
+6 ERR_UNSUPPORTED_DIR_IMPORT, 7 ERR_UNKNOWN_FILE_EXTENSION, 8 OTHER.
+Failure stage remains finite 0..7; entry_verified distinguishes pre-import entry
+verification from import failure. Controller metadata records loader_revision=2
+and archive_pair_verified=true only after successful preflight.
+
+Exact six-file freeze requires independent review before commit/push/execution.
+Only self-authored fixtures and offline tests may run before that review. An import
+success or empty-account handshake is not proof of account reuse, model inference,
+or production readiness. OwnedWindowsJob is lifecycle containment, not a sandbox.

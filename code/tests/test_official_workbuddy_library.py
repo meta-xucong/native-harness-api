@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import subprocess
 import shutil
+import struct
 import sys
 import tempfile
 import unittest
@@ -15,7 +16,7 @@ import official_workbuddy_library as p
 
 
 def dto():
-    return {**{k:True for k in p.BOOLS},'schema_version':1,'protocol_version':1,'failure_stage':0,'elapsed_ms':1}
+    return {**{k:True for k in p.BOOLS},'schema_version':2,'protocol_version':1,'failure_stage':0,'elapsed_ms':1,'error_class':0}
 
 class Input(io.BytesIO):
     def write(self,_): raise AssertionError('stdin must never be written')
@@ -32,6 +33,50 @@ class Owner:
     def close(self,_): return {'owned_job_empty':True}
 
 class Tests(unittest.TestCase):
+    def test_asar_pair_bounded_header(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp); package=root/'package'; (package/'lib').mkdir(parents=True)
+            data={'package.json':b'{}','lib/public.js':b'export{};'}
+            pins={k:hashlib.sha256(v).hexdigest() for k,v in data.items()}
+            sizes={k:len(v) for k,v in data.items()}
+            for k,v in data.items():(package/k).write_bytes(v)
+            header={'files':{}}; current=header
+            for part in ('node_modules','@genie','agent-harness'):
+                current=current['files'].setdefault(part,{'files':{}})
+            for name in data:
+                target=current
+                for part in name.split('/')[:-1]:target=target['files'].setdefault(part,{'files':{}})
+                target['files'][name.split('/')[-1]]={'size':sizes[name],'unpacked':True,
+                    'integrity':{'algorithm':'SHA256','hash':pins[name]}}
+            def packed(obj):
+                raw=json.dumps(obj,separators=(',',':')).encode(); padded=(len(raw)+3)//4*4
+                return struct.pack('<4I',4,padded+8,padded+4,len(raw))+raw+b'\0'*(padded-len(raw))
+            archive=root/'app.asar'
+            def check(blob):
+                archive.write_bytes(blob)
+                with patch.object(p,'ASAR_SIZE',len(blob)),patch.object(p,'ASAR_SHA',hashlib.sha256(blob).hexdigest()),patch.object(p,'PIN',pins),patch.object(p,'PAIR_SIZES',sizes):
+                    p.verify_asar_pair(archive,package)
+            good=packed(header); check(good)
+            for prefix in [(3,8,4,1),(4,9*1024*1024,8,1),(4,8,4,99)]:
+                with self.assertRaises(p.Rejected):check(struct.pack('<4I',*prefix)+b'{}')
+            current['files']['package.json']['unpacked']=False
+            with self.assertRaises(p.Rejected):check(packed(header))
+            current['files']['package.json']['unpacked']=True
+            current['files']['package.json']['link']='other'
+            with self.assertRaises(p.Rejected):check(packed(header))
+            del current['files']['package.json']['link']
+            (package/'lib/public.js').write_bytes(b'changed!!')
+            with self.assertRaises(p.Rejected):check(good)
+
+    def test_schema2_error_classes_and_entry_order(self):
+        for error in range(1,9):
+            d=dto(); d.update(success=False,import_ok=False,harness_created=False,client_created=False,
+                connected=False,client_closed=False,harness_closed=False,harness_settled=False,
+                protocol_version=0,failure_stage=1,error_class=error)
+            self.assertEqual(p.parse_dto(json.dumps(d).encode())['error_class'],error)
+        d=dto();d['schema_version']=1
+        with self.assertRaises(p.Rejected):p.parse_dto(json.dumps(d).encode())
+
     def test_complete_tree_pin(self):
         with tempfile.TemporaryDirectory() as tmp:
             root=Path(tmp); (root/'a').write_bytes(b'fixture')
@@ -103,12 +148,12 @@ class Tests(unittest.TestCase):
         for raw in [b'{}',b'{"a":1,"a":2}',b'{"a":NaN}',b'\xff',b' '*4097]:
             with self.assertRaises(p.Rejected): p.parse_dto(raw)
         for key,val in [('protocol_version',True),('failure_stage',8),('elapsed_ms',float('inf')),
-                        ('import_ok',False),('extra','SECRET')]:
+                        ('entry_verified',False),('error_class',9),('error_class',True),('import_ok',False),('extra','SECRET')]:
             d=dto();d[key]=val
             with self.subTest(key=key),self.assertRaises(p.Rejected):p.parse_dto(json.dumps(d).encode())
 
     def test_partial_not_success(self):
-        d=dto();d['connected']=False;d['success']=False;d['failure_stage']=4
+        d=dto();d['connected']=False;d['success']=False;d['failure_stage']=4;d['error_class']=8
         self.assertFalse(p.parse_dto(json.dumps(d).encode())['success'])
 
     def test_fixed_file(self):

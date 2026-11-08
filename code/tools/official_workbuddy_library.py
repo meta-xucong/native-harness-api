@@ -10,6 +10,7 @@ import math
 import os
 from pathlib import Path
 import stat
+import struct
 import threading
 import time
 from native_harness_api.windows_job import OwnedWindowsJob
@@ -17,9 +18,9 @@ from official_workbuddy_smoke import acquire, INSTALLER_SHA
 
 LIMIT = 1024 * 1024
 RETAINED = []
-BOOLS = ('import_ok','harness_created','client_created','connected','client_closed',
+BOOLS = ('entry_verified','import_ok','harness_created','client_created','connected','client_closed',
          'harness_closed','harness_settled','success')
-KEYS = set(BOOLS) | {'schema_version','protocol_version','failure_stage','elapsed_ms'}
+KEYS = set(BOOLS) | {'schema_version','protocol_version','failure_stage','elapsed_ms','error_class'}
 PIN = {'package.json':'9f7aaf7ba9cf0f8bb961e22a80c9e7ac24c2fcb4232b145e91eb39bcecb539a4',
        'lib/public.js':'8bfbfd68b6f4c04c70a94e1943ecc2a391dd5618e4a1cff087f77ea9d5402733'}
 
@@ -50,11 +51,13 @@ def parse_dto(raw):
         d=json.loads(raw.decode('utf8'),object_pairs_hook=unique,parse_constant=invalid)
         require(type(d) is dict and set(d)==KEYS)
         require(all(type(d[k]) is bool for k in BOOLS))
-        for key,maximum in [('schema_version',1),('protocol_version',1),('failure_stage',7),('elapsed_ms',120000)]:
+        for key,maximum in [('schema_version',2),('protocol_version',1),('failure_stage',7),('elapsed_ms',120000),('error_class',8)]:
             require(type(d[key]) is int and 0<=d[key]<=maximum)
-        require(d['schema_version']==1)
+        require(d['schema_version']==2)
+        require(not d['import_ok'] or d['entry_verified'])
+        require((d['error_class']==0)==(d['failure_stage']==0))
         # Success cannot be inferred from a partial child report.
-        complete=all(d[k] for k in BOOLS if k!='success') and d['protocol_version']==1 and d['failure_stage']==0
+        complete=all(d[k] for k in BOOLS if k!='success') and d['protocol_version']==1 and d['failure_stage']==0 and d['error_class']==0
         require(d['success']==complete)
         require(d['failure_stage']!=0 or complete)
         require(not d['connected'] or d['client_created'] and d['harness_created'] and d['import_ok'])
@@ -161,6 +164,48 @@ def verify_tree(root,expected_hash,expected_count):
     require(digest.hexdigest()==expected_hash)
 
 
+ASAR_SHA = 'dcabcd90f07a627a06f1fd55bc872a1c25a79aab43c3012930b6287840ab3d20'
+ASAR_SIZE = 181996084
+PAIR_SIZES = {'package.json':18632, 'lib/public.js':296}
+
+def verify_asar_pair(archive, package):
+    """Read only: pinned archive header and exact unpacked pair, never extract/resolve imports."""
+    ancestors(archive); before=archive.stat()
+    require(stat.S_ISREG(before.st_mode) and before.st_nlink==1 and before.st_size==ASAR_SIZE)
+    with archive.open('rb') as stream:
+        opened=os.fstat(stream.fileno())
+        require((before.st_dev,before.st_ino)==(opened.st_dev,opened.st_ino))
+        require(hashlib.file_digest(stream,'sha256').hexdigest()==ASAR_SHA)
+        stream.seek(0); prefix=stream.read(16); require(len(prefix)==16)
+        first,header_size,payload_size,json_size=struct.unpack('<4I',prefix)
+        require(first==4 and 8<=header_size<=8*1024*1024 and header_size%4==0)
+        require(payload_size==header_size-4 and 0<json_size<=payload_size-4)
+        require(header_size==8+((json_size+3)//4)*4 and 8+header_size<=before.st_size)
+        raw=stream.read(json_size); require(len(raw)==json_size)
+        def invalid(_): raise Rejected()
+        header=json.loads(raw.decode('utf8'),object_pairs_hook=unique,parse_constant=invalid)
+        after=os.fstat(stream.fileno())
+        require((before.st_size,before.st_mtime_ns)==(after.st_size,after.st_mtime_ns))
+    for name,expected in PIN.items():
+        record=header
+        for part in ('node_modules','@genie','agent-harness',*name.split('/')):
+            require(type(record) is dict and type(record.get('files')) is dict)
+            record=record['files'].get(part)
+        require(type(record) is dict and record.get('unpacked') is True)
+        require('link' not in record and 'offset' not in record and 'files' not in record)
+        require(type(record.get('size')) is int and record['size']==PAIR_SIZES[name])
+        integrity=record.get('integrity')
+        require(type(integrity) is dict and integrity.get('algorithm')=='SHA256' and integrity.get('hash')==expected)
+        path=package/name; ancestors(path); info=path.stat()
+        require(stat.S_ISREG(info.st_mode) and info.st_nlink==1 and info.st_size==PAIR_SIZES[name])
+        with path.open('rb') as stream:
+            opened=os.fstat(stream.fileno())
+            require((info.st_dev,info.st_ino)==(opened.st_dev,opened.st_ino))
+            require(hashlib.file_digest(stream,'sha256').hexdigest()==expected)
+            after=os.fstat(stream.fileno())
+            require((info.st_size,info.st_mtime_ns)==(after.st_size,after.st_mtime_ns))
+
+
 def environment(root):
     private=root/'isolated'; private.mkdir()
     env={'SystemRoot':os.environ.get('SystemRoot',r'C:\Windows'),'ELECTRON_RUN_AS_NODE':'1',
@@ -181,8 +226,8 @@ def main(argv=None):
     try:
         require(os.name=='nt' and os.environ.get('GITHUB_ACTIONS')=='true' and os.environ.get('RUNNER_ENVIRONMENT')=='github-hosted')
         require(args.run_root.is_absolute() and args.summary.is_absolute())
-        require(args.run_root==Path(os.environ['RUNNER_TEMP'])/'native-harness-library-once')
-        require(args.summary==Path(os.environ['GITHUB_WORKSPACE'])/'library-sanitized-summary.json')
+        require(args.run_root==Path(os.environ['RUNNER_TEMP'])/'native-harness-library-asar-once')
+        require(args.summary==Path(os.environ['GITHUB_WORKSPACE'])/'library-asar-sanitized-summary.json')
         ancestors(args.run_root.parent); ancestors(args.summary.parent); require(not args.summary.exists())
         report['preflight_stage']=2
         args.run_root.mkdir()
@@ -195,9 +240,7 @@ def main(argv=None):
         ancestors(executable); require(executable.stat().st_nlink==1 and executable.stat().st_size==204590360)
         with executable.open('rb') as f: require(hashlib.file_digest(f,'sha256').hexdigest()=='bbf504003825e0e22dd8c401b396d79db78ec603558088565d1b2e81561704a0')
         package=executable.parent/'resources/app.asar.unpacked/node_modules/@genie/agent-harness'
-        for name,expected in PIN.items():
-            path=package/name; ancestors(path); require(path.stat().st_nlink==1)
-            with path.open('rb') as f: require(hashlib.file_digest(f,'sha256').hexdigest()==expected)
+        verify_asar_pair(executable.parent/'resources/app.asar',package)
         report['preflight_stage']=5
         env=environment(args.run_root); workspace=args.run_root/'workspace'; workspace.mkdir()
         output=args.run_root/'output'; output.mkdir(); trusted=identity(output)
@@ -206,6 +249,7 @@ def main(argv=None):
         command=[str(executable),str(driver),'--package-root',str(package),'--run-root',str(args.run_root)]
         report['preflight_stage']=6
         report=collect(supervise(command,workspace,env),output,trusted); report['preflight']=True; report['preflight_stage']=0
+        report['loader_revision']=2; report['archive_pair_verified']=True
     except (Exception,KeyboardInterrupt): pass
     # Reconstructed own DTO only; no raw strings or errors.
     try:

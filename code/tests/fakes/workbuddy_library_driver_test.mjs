@@ -1,6 +1,8 @@
 /** All APIs here are self-authored fakes. No vendor package is imported. */
 import assert from 'node:assert/strict';
-import { runHandshake, complete } from '../../tools/workbuddy_library_driver.mjs';
+import { runHandshake as actualHandshake, complete, classifyError } from '../../tools/workbuddy_library_driver.mjs';
+
+const runHandshake = (load, options = {}, clock) => actualHandshake(load, { verifyEntry: async () => {}, ...options }, clock);
 
 function fixture(fail = '') {
   const calls = [];
@@ -103,4 +105,46 @@ assert.equal(microtaskRace.harness_closed, false);
 assert.equal(microtaskRace.harness_settled, false);
 assert.equal(raceClientCloses, 1);
 assert.equal(raceHarnessCloses, 1); count++;
+const verifyCalls = [];
+const verified = fixture();
+const ordered = await runHandshake(() => { verifyCalls.push('import'); return verified.load(); }, {
+  configDir: '/synthetic', timeoutMs: 1000, cleanupMs: 1000,
+  verifyEntry: async () => { verifyCalls.push('verify'); }
+});
+assert.deepEqual(verifyCalls, ['verify', 'import']);
+assert.equal(ordered.schema_version, 2);
+assert.equal(ordered.entry_verified, true);
+assert.equal(ordered.error_class, 0); count++;
+let blockedImport = 0;
+const virtualFail = await runHandshake(() => { blockedImport++; }, { verifyEntry: async () => {
+  throw Object.defineProperty(new Error('PRIVATE_SECRET'), 'code', { value: 'ENOENT' });
+} });
+assert.equal(blockedImport, 0);
+assert.equal(virtualFail.entry_verified, false);
+assert.equal(virtualFail.import_ok, false);
+assert.equal(virtualFail.failure_stage, 1);
+assert.equal(virtualFail.error_class, 3); count++;
+const importFail = await runHandshake(async () => { throw { code: 'ERR_MODULE_NOT_FOUND', message: 'PRIVATE_SECRET' }; });
+assert.equal(importFail.entry_verified, true);
+assert.equal(importFail.import_ok, false);
+assert.equal(importFail.error_class, 1);
+assert.ok(!JSON.stringify(importFail).includes('PRIVATE_SECRET')); count++;
+let getterCalls = 0;
+assert.equal(classifyError({ get code() { getterCalls++; throw Error('PRIVATE_SECRET'); } }), 8);
+assert.equal(getterCalls, 0);
+assert.equal(classifyError(Object.create({ code: 'ENOENT' })), 8);
+assert.equal(classifyError({ code: 'PRIVATE_SECRET' }), 8);
+assert.equal(classifyError({ code: 3 }), 8);
+assert.equal(classifyError(new Proxy({}, { getOwnPropertyDescriptor() { throw Error('PRIVATE_SECRET'); } })), 8);
+for (const [code, value] of Object.entries({ ERR_MODULE_NOT_FOUND:1, MODULE_NOT_FOUND:2, ENOENT:3, EACCES:4, EPERM:5, ERR_UNSUPPORTED_DIR_IMPORT:6, ERR_UNKNOWN_FILE_EXTENSION:7 })) {
+  assert.equal(classifyError({ code }), value);
+}
+count++;
+let verifyClock = 0;
+const verifyExpired = await runHandshake(() => { blockedImport++; }, {
+  timeoutMs: 5, cleanupMs: 1000, verifyEntry: async () => { verifyClock = 10; }
+}, () => verifyClock);
+assert.equal(verifyExpired.failure_stage, 7);
+assert.equal(verifyExpired.entry_verified, false);
+assert.equal(blockedImport, 0); count++;
 console.log(`synthetic_node_driver_tests=${count}`);
