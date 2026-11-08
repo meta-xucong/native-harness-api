@@ -107,9 +107,11 @@ Facade 的有限等待可能先返回 504。此时不能生成新 key、换模�
 
 `standard_wait_seconds` 默认为180秒，允许0–300；0表示不追加观察。仅明确504 `TASK_WAIT_TIMEOUT` 后，在同一请求预算内以只读方式观察同一冻结任务，不创建新任务或跨provider重试。客户端断连只停止观察，不代表原生任务取消。客户端及Sub2API前置反代超时必须覆盖配置等待预算与网络余量（180秒配置建议至少240秒），应由部署管理员验证实际每一跳。
 
-标准路径 `stream:true` 现在为 **native-events-v1 named SSE**，不再等终态才输出。响应 `X-Native-Stream-Mode: native-events-v1`；每条持久事件使用Bridge seq作为id，立即flush。`text_snapshot {text}`是权威完整文本快照，必须替换此前文本，可缩短、更正或清空；不是append token delta。`native_status`/`task_status`反映原生与账本状态，idle/end_turn不单独证明完成。只有验证后的 `completion`（完整最终答案）或 `task_error` 是结果终态。不能交给只识别OpenAI choices.delta的客户端，也不伪造usage。
+标准路径 `stream:true` 缺省为 **openai-append-v1** 普通 data SSE / choices.delta，响应 X-Native-Stream-Mode 标识模式。只将可追加原生快照的真实新增后缀发送给 SDK；已发文本在最终核验前均为临时内容。原生缩短/改写或最终不一致时发 NATIVE_STREAM_REWRITE_REQUIRED 标准 error 并关闭，无成功结束帧或 [DONE]；原 Key/正文/Idempotency-Key 改 stream:false 恢复权威结果，不重新执行；切换 stream:false 时须移除显式协议头，否则返回 STREAM_PROTOCOL_REQUIRES_STREAM。普通 SDK 必须显式配置稳定幂等头，建议 max_retries=0；不是任意客户端零配置兼容。任务状态在标准流中仅为注释，SDK通常忽略，不保证显示审批/unknown。未知usage不伪造。
 
-收到并应用事件后保存id。断线后保持同Key、同正文、同Idempotency-Key，并携带 `Last-Event-ID` 只读恢复；丢游标使用0。重复收到同id应去重；不能将EOF视为成功。无id的 `observation_error` 仅表示观察中断、未取消任务；`observation_end`说明已读到持久终态游标，不重复最终答案。原生日志不是全部原样公开，模型正文也不保证自动脱敏。完整合同见Windows包内 `NATIVE_EVENT_STREAM.md` 或源码同名文档。
+要显示完整快照更正和任务状态，请显式请求 `X-Native-Stream-Protocol: native-events-v1`。此模式每条命名持久事件使用Bridge seq作为id；text_snapshot覆盖全部文本（可缩短/更正/清空），native_status/task_status反映观察事实，idle/end_turn不证明完成。只有验证后的completion或task_error是结果终态。该显式模式不能交给仅识别 choices.delta 的 SDK。
+
+断线保持同Key/正文/Idempotency-Key并携带 Last-Event-ID 只读恢复。标准流仅允许0从头重放，正游标在准入前拒绝；显式原生流支持正游标并按id去重。没有该头的请求仍去重但会重新检查准入，不称只读恢复。两模式共用规范操作摘要，切换stream或协议不新生任务。原生模式无id的observation_error仅表示观察中断，observation_end表示终态游标到达；标准模式error后关闭无成功终止帧。EOF从不等于成功。原生日志不是全部原样公开，模型正文不保证自动脱敏。完整合同见 NATIVE_EVENT_STREAM.md；SDK示例见配套Sub2API源码 docs/native-harness/STANDARD_API_OPT_IN.md。
 
 流模式 `standard_wait_seconds` 须1–300，默认180；预算或单次写入超时只中断观察，不取消/重派原生工作。前置代理必须禁用响应缓冲/缓存/上游重试，允许SSE并合理配置read timeout；`: observing`仅为连接保活注释，不证明WorkBuddy仍在生成。专用native-harness非流式接口仍不接受stream:true，stream_options尚不支持。
 

@@ -22,4 +22,4 @@
 
 完整保留官方 SFE 包的 `assets/sfe/package/LICENSE`（Tencent CodeBuddy MIT）、Node 发行包中的 `LICENSE` 及全部随包文件、Python 的 `runtime/LICENSE.txt`。软件分发许可不等于账号配额可向第三方商业转供；服务条款和账号授权需单独遵守。
 
-标准 `/v1` 接入需服务端显式开启 `standard_api`，仍要求稳定Idempotency-Key；不是完整通用provider。`stream:true`现在使用 `native-events-v1`：及时输出原生文本快照及任务状态，不是仅终态缓冲，也不是OpenAI choices.delta token流。`text_snapshot`须覆盖全部文本（可缩短/更正），仅 `completion`/`task_error` 表示结果终态；idle、EOF和断线均不代表完成。同Key/正文/Idempotency-Key配合Last-Event-ID恢复，丢游标用0，绝不换键重生。完整事件协议见本包 `NATIVE_EVENT_STREAM.md`，180秒观察预算、代理禁缓冲和排空约束见部署说明。
+标准 `/v1` 接入需服务端显式开启 `standard_api`，每次调用仍需稳定 Idempotency-Key；不是完整通用 provider。`stream:true` 缺省为 `openai-append-v1`，可被普通 OpenAI SDK 消费，只对真实可追加快照输出 choices.delta 后缀。若原生改写/缩短或最终不一致，报 NATIVE_STREAM_REWRITE_REQUIRED 后关闭而不发 [DONE]，须原 Key/正文/幂等键改 stream:false 获取权威答案，不能换键重生；切换 stream:false 时移除显式协议头。普通 SDK 通常不显示状态注释；需要快照更正及审批/unknown 状态请显式发送 `X-Native-Stream-Protocol: native-events-v1`，按 text_snapshot 覆盖全部文本，仅 completion/task_error 表示终态。标准流只支持 Last-Event-ID:0 从头只读恢复；显式原生流可用正游标恢复。idle、EOF、断线均不代表完成。完整双协议、180秒预算和代理禁缓冲规则见 NATIVE_EVENT_STREAM.md 及部署说明。

@@ -1,7 +1,8 @@
-# 原生实时事件合同 native-events-v1
+# 双协议实时流与原生事件合同
 
-此版本替代标准路径的 buffered-final SSE。不是原始模型 token 流，也不是完整
-OpenAI delta 合同；使用方必须按事件类型处理快照覆盖与任务状态。
+标准路径不再使用 buffered-final SSE。缺省 openai-append-v1 将可追加的原生快照
+映射为受限 OpenAI choices.delta；显式选择 native-events-v1 才输出完整快照及状态。
+这不是原始模型 token 流，也不代表完整 OpenAI API 兼容。
 只支持既有单可信用户、未知用量不收费、固定模型绑定和唯一 Bridge 账本边界。
 未验证真实账号，不以离线事件测试宣称实际 WorkBuddy 行为已验收。
 
@@ -43,8 +44,22 @@ Bridge `GET /bridge/v1/tasks/{task_id}/harness-events?after=N&limit=8` 为不授
 
 ## 下游 Sub2 SSE 与恢复
 
-专用 Key 的标准 `/v1/chat/completions` 配置开启后，`stream:true` 输出
+专用 Key 的标准 `/v1/chat/completions` 配置开启后，`stream:true` 缺省选择
+`openai-append-v1`，返回普通 `data:` SSE、`chat.completion.chunk` / `choices.delta`。
+仅当前快照以已发文本为前缀时发送新增后缀；只有最终结果验证且与已发内容一致，
+才发送结束帧及 `[DONE]`。缩短、改写或最终不一致时发送
+`NATIVE_STREAM_REWRITE_REQUIRED` 标准 error 后关闭，不发送成功终止帧。
+已显示文本只是临时内容，错误后需原 Key/正文/Idempotency-Key 改 `stream:false`
+恢复权威结果，不自动重生任务。切换 stream:false 时须移除显式
+X-Native-Stream-Protocol 头，否则返回 STREAM_PROTOCOL_REQUIRES_STREAM。普通 SDK 需显式提供稳定幂等头，建议关闭自动重试。
+标准流的任务状态仅为 SSE 注释，普通 SDK 通常忽略，不能宣称它显示审批/unknown。
+标准流只允许 `Last-Event-ID:0` 从头只读恢复；正游标在准入前拒绝。
+未知 usage 不造假，stream_options 不支持，仍仅单 user 纯文本。
+
+需要完整原生状态、快照更正或正游标恢复时，显式发送请求头
+`X-Native-Stream-Protocol: native-events-v1`，响应
 `Content-Type: text/event-stream` 与 `X-Native-Stream-Mode: native-events-v1`。
+以下命名事件和正游标规则仅适用于此显式模式。
 每条 durable 事件编码成 `id: seq`、`event: type`、`data: JSON(data)`，立即 flush。
 内容以 text_snapshot 和最终 completion 的完整结果为权威；不发送伪造 token delta
 或 usage。不要把此流交给仅认识 OpenAI choices.delta 的客户端。
