@@ -1,9 +1,9 @@
-"""Run the real Sub2API HTTP seam against real Bridge/Facade and FakeHarness.
+"""Run the three-repository synthetic HTTP chain.
 
-Authentication lookup and operation-route storage are explicit test substitutes
-in the Go test. This does NOT validate PostgreSQL migrations or persistence.
-All execution is synthetic, loopback-only and uses temporary data directories.
-No provider request, credential extraction or deployment occurs.
+Authentication lookup remains a fixture. Operation routing uses an in-memory
+fixture by default, or real PostgreSQL only with --disposable-postgres and an
+explicit operator-supplied disposable migrated DSN. No model/provider request,
+credential extraction or deployment occurs.
 """
 from contextlib import ExitStack
 from pathlib import Path
@@ -27,9 +27,12 @@ from native_harness_api.runtime import node_tick
 from test_real_bridge import bridge_server, facade_server
 
 
-def run(backend: Path, go: Path):
+def run(backend: Path, go: Path, *, disposable_postgres=False):
     if not (backend / "go.mod").is_file() or not go.is_file():
         raise ValueError("Explicit checked-out Sub2API backend and Go binary required")
+    if disposable_postgres and not os.environ.get("NATIVE_HARNESS_TEST_DSN"):
+        raise ValueError("Explicit disposable PostgreSQL DSN required")
+    test_name = "TestNativeHarnessExternalBridge" if disposable_postgres else "TestNativeHarnessExternalBridgeMemoryRoute"
     with ExitStack() as stack:
         root = Path(stack.enter_context(tempfile.TemporaryDirectory()))
         binding = Binding("binding-test", 1, "synthetic-test", "fake-text")
@@ -68,9 +71,10 @@ def run(backend: Path, go: Path):
         worker.start()
         try:
             env = dict(os.environ, NATIVE_HARNESS_TEST_FACADE=facade_url)
-            env.pop("NATIVE_HARNESS_TEST_DSN", None)  # Never accidentally run a database test.
+            if not disposable_postgres:
+                env.pop("NATIVE_HARNESS_TEST_DSN", None)  # Default never accesses a DB.
             result = subprocess.run([str(go), "test", "-tags=unit", "./internal/handler", "-count=1",
-                    "-run", "^TestNativeHarnessExternalBridgeMemoryRoute$", "-timeout=90s", "-v"],
+                    "-run", "^" + test_name + "$", "-timeout=90s", "-v"],
                     cwd=backend, env=env, text=True, capture_output=True, timeout=180)
         finally:
             stop.set()
@@ -81,13 +85,13 @@ def run(backend: Path, go: Path):
         print(json.dumps({"node_fault_codes": sorted(set(faults)), "synthetic_starts": fake.start_count,
             "journal_states": [{k: record.get(k) for k in ("outcome", "liveness", "launch_intent", "acknowledged")}
                                for record in runner.journal.records()]}, sort_keys=True))
-        if result.returncode or "--- PASS: TestNativeHarnessExternalBridgeMemoryRoute" not in result.stdout:
+        if result.returncode or "--- PASS: " + test_name not in result.stdout:
             raise RuntimeError("The explicit Sub2API integration test did not pass")
         if worker.is_alive() or faults or fake.start_count != 1:
             raise RuntimeError("Node did not complete exactly one synthetic execution")
         print(json.dumps({"actual_bridge_http": True, "actual_sub2api_middleware_handler_http": True,
                           "synthetic_native_starts": fake.start_count, "auth_lookup_fixture": True,
-                          "route_store_fixture": True, "postgresql_verified": False,
+                          "route_store_fixture": not disposable_postgres, "postgresql_verified": disposable_postgres,
                           "actual_native_model": False, "paid_inference": False}, sort_keys=True))
 
 
@@ -95,5 +99,6 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--sub2api-backend", type=Path, required=True)
     parser.add_argument("--go", type=Path, required=True)
+    parser.add_argument("--disposable-postgres", action="store_true", help="Use explicit NATIVE_HARNESS_TEST_DSN; operator must supply disposable migrated DB")
     args = parser.parse_args()
-    run(args.sub2api_backend.resolve(), args.go.resolve())
+    run(args.sub2api_backend.resolve(), args.go.resolve(), disposable_postgres=args.disposable_postgres)

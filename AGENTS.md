@@ -41,3 +41,7 @@ P2 独立本机试验工具另见 blueprint/P2-LOCAL-TRIAL-ADDENDUM.md 和 code/
 - 同键在首次未准入、渠道变更和重启后仍冻结原路由；再次准入仍检查当前执行权限。
 - 标准 API 语义与原生 Agent 能力分开，未知用量不填零。
 - 最终提交前跑 code/ 的实际测试及离线 demo；文档抽象脚本通过不能代替它们。
+
+## 后续显式 local-trial 渠道
+
+用户要求完成代码后自行部署/认证。单用户原生试验模式的新合同见 `blueprint/LOCAL-TRIAL-CHANNEL-ADDENDUM.md`；该明确模式扩展上文 P1b synthetic-only 门禁，不改变默认模式或生产限制，也不代表真实账号/模型已验。

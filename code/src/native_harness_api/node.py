@@ -138,9 +138,14 @@ class NodePolicy:
     ledger_instance: str
     allowed_owners: frozenset[tuple[str, str]]
     bindings: tuple[Binding, ...]
+    mode: str = "p1b_integration"
 
     def __post_init__(self):
         try:
+            if self.mode not in {"p1b_integration", "workbuddy_local_trial"}:
+                raise ValueError()
+            if self.mode == "workbuddy_local_trial" and len(self.allowed_owners) != 1:
+                raise ValueError()
             identifier(self.source)
             identifier(self.ledger_instance)
             if type(self.allowed_owners) is not frozenset or not self.allowed_owners:
@@ -157,6 +162,8 @@ class NodePolicy:
                     raise ValueError()
                 # Revalidate even an object constructed through unsafe reflection.
                 Binding(**binding.wire())
+                if self.mode == "workbuddy_local_trial" and (not binding.model_alias.startswith("workbuddy-") or binding.native_model.startswith("fake-")):
+                    raise ValueError()
             fingerprints = [digest(binding.wire()) for binding in self.bindings]
             if len(set(fingerprints)) != len(fingerprints):
                 raise ValueError()
@@ -193,6 +200,8 @@ class NodePolicy:
             if not isinstance(frozen, dict) or set(frozen) != {'binding', 'messages', 'client_request'}:
                 raise ValueError()
             client = normalize_request(frozen['client_request'])
+            if self.mode == "workbuddy_local_trial" and (len(client["messages"]) != 1 or client["messages"][0]["role"] != "user"):
+                raise ValueError()
             if canonical(frozen['client_request']) != canonical(client):
                 raise ValueError()
             checked_task(task, identity, digest(client), self.ledger_instance)
