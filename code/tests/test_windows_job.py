@@ -39,6 +39,13 @@ class PortableWaitAlgorithmTests(unittest.TestCase):
         owner._state_lock = threading.RLock()
         owner._closed = owner._empty_observed = False
         owner._assigned = True
+        owner._tracking_lock = threading.RLock()
+        owner._known = {(202, 1): 202}
+        owner._unclassified = set()
+        owner._tracking_fault = None
+        owner._tracker_stop = threading.Event()
+        owner._last_total = 0
+        owner._stop_proven = False
         owner._job, owner._process = 101, 202
         owner._error = lambda code: WindowsJobError(code, owner=owner)
         class API:
@@ -49,6 +56,11 @@ class PortableWaitAlgorithmTests(unittest.TestCase):
             def QueryInformationJobObject(self, handle, kind, info, size, returned):
                 if query_failure:
                     return 0
+                if kind == 3:
+                    ctypes.cast(info, ctypes.POINTER(ctypes.c_uint32))[0] = 0
+                    ctypes.cast(info, ctypes.POINTER(ctypes.c_uint32))[1] = 0
+                    return 1
+                ctypes.cast(info, ctypes.POINTER(_Accounting)).contents.TotalProcesses = 1
                 count = counts[min(self.queries, len(counts)-1)]
                 self.queries += 1
                 ctypes.cast(info, ctypes.POINTER(_Accounting)).contents.ActiveProcesses = count
@@ -71,7 +83,7 @@ class PortableWaitAlgorithmTests(unittest.TestCase):
         now, sleep = self.clock()
         with patch('native_harness_api.windows_job.time.monotonic', side_effect=lambda: now[0]), patch('native_harness_api.windows_job.time.sleep', side_effect=sleep):
             self.assertEqual(owner.terminate(.1), {'owned_job_empty': True})
-        self.assertEqual(owner._api.waits, 3)
+        self.assertGreaterEqual(owner._api.waits, 3)
         self.assertGreater(now[0], 0)
         self.assertTrue(owner.host_exited())
         self.assertTrue(owner._empty_observed)
@@ -87,16 +99,235 @@ class PortableWaitAlgorithmTests(unittest.TestCase):
         self.assertFalse(owner._closed)
 
     def test_query_or_wait_failure_is_not_empty_success(self):
-        for owner in (self.owner((0,), query_failure=True), self.owner((0xFFFFFFFF,))):
-            with self.assertRaises(WindowsJobError):
-                owner.terminate(0)
-            self.assertFalse(owner._empty_observed)
-            self.assertEqual((owner._job, owner._process), (101, 202))
+        owner = self.owner((0,), query_failure=True)
+        self.assertFalse(owner.terminate(0)['owned_job_empty'])
+        owner = self.owner((0xFFFFFFFF,))
+        with self.assertRaises(WindowsJobError): owner.terminate(0)
+        self.assertFalse(owner._empty_observed)
+        self.assertEqual((owner._job, owner._process), (101, 202))
 
     def test_host_signal_alone_does_not_prove_job_empty(self):
         owner = self.owner((0,), counts=(1,))
         self.assertEqual(owner.terminate(0), {'owned_job_empty': False})
         self.assertFalse(owner._empty_observed)
+
+
+class PortableTrackingTests(unittest.TestCase):
+    """Object-lifetime/census algorithm tests, not Windows runtime evidence."""
+    def owner(self):
+        from native_harness_api.windows_job import _Accounting, _FileTime, SIZE_T, DWORD, LPVOID
+        class API:
+            pids = []
+            total = 1
+            active = 0
+            statuses = {100: 0}
+            identities = {100: (10, 1)}
+            opens = {10: 100}
+            members = {100: True}
+            closed = []
+            fail_close = None
+            def QueryInformationJobObject(self, job, kind, ptr, size, returned):
+                if kind == 1:
+                    info = ctypes.cast(ptr, ctypes.POINTER(_Accounting)).contents
+                    info.TotalProcesses, info.ActiveProcesses = self.total, self.active
+                else:
+                    head = ctypes.cast(ptr, ctypes.POINTER(DWORD))
+                    head[0] = head[1] = len(self.pids)
+                    array = ctypes.cast(ctypes.addressof(ptr._obj) + 8, ctypes.POINTER(SIZE_T))
+                    for i, pid in enumerate(self.pids): array[i] = pid
+                return 1
+            def WaitForSingleObject(self, handle, ms): return self.statuses.get(handle, 0xffffffff)
+            def OpenProcess(self, rights, inherit, pid):
+                self.last_rights = rights, inherit
+                return self.opens.get(pid)
+            def IsProcessInJob(self, handle, job, ptr):
+                ctypes.cast(ptr, ctypes.POINTER(ctypes.c_int32)).contents.value = self.members.get(handle, False)
+                return 1
+            def GetProcessTimes(self, handle, created, *unused):
+                if handle not in self.identities: return 0
+                ctypes.cast(created, ctypes.POINTER(_FileTime)).contents.low = self.identities[handle][1]
+                return 1
+            def TerminateJobObject(self, *args): return 1
+            def CloseHandle(self, handle):
+                if handle == self.fail_close: return 0
+                self.closed.append(handle); return 1
+        with patch('native_harness_api.windows_job._Win32', return_value=API()):
+            owner = OwnedWindowsJob()
+        owner._job, owner._process, owner.pid = 999, 100, 10
+        owner._assigned = True
+        owner._error = lambda code: WindowsJobError(code, owner=owner)
+        owner._retain_process(100, 10, host=True)
+        return owner
+
+    def add_child(self, owner, *, pid=20, handle=200, created=2, status=258):
+        api = owner._api
+        # Avoid sharing the fake class defaults across owner instances.
+        api.statuses = {**api.statuses, handle: status}
+        api.identities = {**api.identities, handle: (pid, created)}
+        api.opens = {**api.opens, pid: handle}
+        api.members = {**api.members, handle: True}
+        api.total += 1
+        owner._capture_pid(pid)
+
+    def test_accounting_zero_is_insufficient_until_every_object_signaled(self):
+        owner = self.owner(); self.add_child(owner)
+        self.assertFalse(owner.wait_empty(0)['owned_job_empty'])
+        owner._api.statuses[200] = 0
+        self.assertTrue(owner.wait_empty(0)['owned_job_empty'])
+
+    def test_uncaptured_short_lived_birth_never_upgraded_by_empty_snapshots(self):
+        owner = self.owner(); owner._api.total = 2
+        for _ in range(3): self.assertFalse(owner.wait_empty(0)['owned_job_empty'])
+        with self.assertRaises(WindowsJobError): owner.close(0)
+        self.assertEqual(owner._process, 100); self.assertEqual(owner._job, 999)
+        self.assertFalse(owner._closed)
+
+    def test_snapshot_catches_new_birth_but_final_counter_catches_gap(self):
+        owner = self.owner(); self.add_child(owner, status=0)
+        original = owner._api.QueryInformationJobObject
+        calls = [0]
+        def query(*args):
+            if args[1] == 1:
+                calls[0] += 1
+                if calls[0] == 2: owner._api.total += 1
+            return original(*args)
+        owner._api.QueryInformationJobObject = query
+        self.assertFalse(owner.wait_empty(0)['owned_job_empty'])
+
+    def test_creation_identity_distinguishes_reused_numeric_pid(self):
+        owner = self.owner(); self.add_child(owner, status=0)
+        self.add_child(owner, pid=20, handle=201, created=3, status=0)
+        self.assertEqual(len(owner._known), 3)
+        self.assertTrue(owner.wait_empty(0)['owned_job_empty'])
+        self.assertEqual(owner._api.last_rights, (0x101000, False))
+
+    def test_foreign_member_and_open_failure_cannot_become_exit_proof(self):
+        owner = self.owner(); owner._api.pids = [20]; owner._api.total = 2
+        self.assertFalse(owner.wait_empty(0)['owned_job_empty'])
+        self.add_child(owner, status=0)
+        owner._api.pids = []
+        owner._api.total = 2
+        # A captured object can recover a transient snapshot open failure only
+        # because exact lifetime census subsequently covers every process.
+        self.assertTrue(owner.wait_empty(0)['owned_job_empty'])
+        owner = self.owner(); owner._api.opens = {20: 200}; owner._api.members = {200: False}
+        with self.assertRaises(WindowsJobError): owner._capture_pid(20)
+        self.assertIn(200, owner._unclassified)
+        self.assertFalse(owner.wait_empty(0)['owned_job_empty'])
+
+    def test_total_regression_and_limit_are_rejected(self):
+        for total in (0, 4097):
+            owner = self.owner(); owner._last_total = 1; owner._api.total = total
+            with self.assertRaises(WindowsJobError): owner.wait_empty(0)
+            self.assertFalse(owner._empty_observed)
+
+    def test_invalid_duplicate_pid_list_is_not_complete(self):
+        for pids in ([0], [20, 20]):
+            owner = self.owner(); owner._api.pids = pids
+            self.assertFalse(owner.wait_empty(0)['owned_job_empty'])
+
+    def test_partial_handle_close_failure_keeps_proof_and_remaining_handles(self):
+        owner = self.owner(); self.add_child(owner, status=0)
+        owner._api.fail_close = 200
+        with self.assertRaises(WindowsJobError): owner.close(.1)
+        self.assertTrue(owner._stop_proven); self.assertIn((20, 2), owner._known)
+        self.assertEqual(owner._job, 999); self.assertFalse(owner._closed)
+        owner._api.fail_close = None
+        self.assertTrue(owner.close(.1)['owned_job_empty'])
+        self.assertTrue(owner._closed); self.assertFalse(owner._known)
+
+    def test_tracker_only_new_message_captures_and_wrong_key_fails_closed(self):
+        from native_harness_api.windows_job import DWORD, SIZE_T, LPVOID
+        for message, key, expected in ((6, 1, [20]), (7, 1, []), (6, 2, [])):
+            owner = self.owner(); captured = []
+            owner._capture_pid = captured.append
+            def dequeue(port, msg, ckey, value, timeout):
+                ctypes.cast(msg, ctypes.POINTER(DWORD)).contents.value = message
+                ctypes.cast(ckey, ctypes.POINTER(SIZE_T)).contents.value = key
+                ctypes.cast(value, ctypes.POINTER(LPVOID)).contents.value = 20
+                owner._tracker_stop.set()
+                return 1
+            owner._api.GetQueuedCompletionStatus = dequeue
+            owner._track_processes()
+            self.assertEqual(captured, expected)
+            self.assertEqual(owner._tracking_fault is not None, key != 1)
+
+    def test_tracker_open_failure_is_sticky_even_after_empty_census(self):
+        from native_harness_api.windows_job import DWORD, SIZE_T, LPVOID
+        owner = self.owner()
+        def dequeue(port, msg, key, value, timeout):
+            ctypes.cast(msg, ctypes.POINTER(DWORD)).contents.value = 6
+            ctypes.cast(key, ctypes.POINTER(SIZE_T)).contents.value = 1
+            ctypes.cast(value, ctypes.POINTER(LPVOID)).contents.value = 20
+            return 1
+        owner._api.GetQueuedCompletionStatus = dequeue
+        owner._track_processes()
+        self.assertIsNotNone(owner._tracking_fault)
+        self.assertFalse(owner.wait_empty(0)['owned_job_empty'])
+
+    def test_process_list_grows_on_more_data_and_rejects_oversize(self):
+        from native_harness_api.windows_job import DWORD, SIZE_T
+        owner = self.owner(); calls = []
+        def query(job, kind, ptr, size, returned):
+            calls.append(size)
+            head = ctypes.cast(ptr, ctypes.POINTER(DWORD)); head[0], head[1] = 40, 0
+            if len(calls) == 1: return 0
+            head[1] = 40
+            array = ctypes.cast(ctypes.addressof(ptr._obj) + 8, ctypes.POINTER(SIZE_T))
+            for i in range(40): array[i] = i + 1
+            return 1
+        owner._api.QueryInformationJobObject = query
+        with patch('native_harness_api.windows_job.C.get_last_error', return_value=234, create=True):
+            self.assertEqual(owner._current_pids(), list(range(1, 41)))
+        self.assertGreater(calls[1], calls[0])
+        def too_many(job, kind, ptr, size, returned):
+            ctypes.cast(ptr, ctypes.POINTER(DWORD))[0] = 4097
+            return 0
+        owner._api.QueryInformationJobObject = too_many
+        with self.assertRaises(WindowsJobError): owner._current_pids()
+
+    def test_tracker_join_timeout_retains_handles_for_same_owner_retry(self):
+        owner = self.owner()
+        class Thread:
+            ident = 1
+            alive = True
+            def join(self, timeout): self.timeout = timeout
+            def is_alive(self): return self.alive
+        owner._tracker = Thread()
+        with self.assertRaisesRegex(WindowsJobError, 'TRACKER_STOP_UNCONFIRMED'): owner.close(0)
+        self.assertFalse(owner._stop_proven); self.assertEqual(owner._process, 100)
+        owner._tracker.alive = False
+        self.assertTrue(owner.close(.1)['owned_job_empty'])
+
+    def test_tracker_worker_host_duplicate_uses_original_retained_host(self):
+        owner = self.owner()
+        owner._known = {(10, 1): 200}
+        owner._api.identities = {100: (10, 1), 200: (10, 1)}
+        owner._api.members = {100: True, 200: True}
+        owner._retain_process(100, 10, host=True)
+        self.assertEqual(owner._known, {(10, 1): 100})
+        self.assertIn(200, owner._api.closed)
+
+    def test_message_overflow_is_sticky_failure(self):
+        from native_harness_api.windows_job import DWORD, SIZE_T
+        owner = self.owner(); owner.MAX_TRACKING_MESSAGES = 2
+        def dequeue(port, message, key, value, timeout):
+            ctypes.cast(message, ctypes.POINTER(DWORD)).contents.value = 7
+            ctypes.cast(key, ctypes.POINTER(SIZE_T)).contents.value = 1
+            return 1
+        owner._api.GetQueuedCompletionStatus = dequeue
+        owner._track_processes()
+        self.assertTrue(owner._tracker_stop.is_set())
+        self.assertFalse(owner.wait_empty(0)['owned_job_empty'])
+
+    def test_port_is_associated_before_tracker_consumer_runs(self):
+        owner = self.owner(); calls = []
+        owner._api.CreateIoCompletionPort = lambda *args: calls.append('create') or 444
+        owner._api.SetInformationJobObject = lambda job, kind, *args: calls.append(('associate', job, kind)) or 1
+        def consume(): calls.append('consume')
+        owner._track_processes = consume
+        owner._start_tracking(); owner._stop_tracking(time.monotonic() + 1)
+        self.assertEqual(calls, ['create', ('associate', 999, 7), 'consume'])
 
 
 @unittest.skipUnless(os.name == 'nt', 'Requires real Windows Job Object APIs; NOT VERIFIED on this host')

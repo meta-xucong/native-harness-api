@@ -6,6 +6,12 @@ Only three specified pipe handles are inherited. No shell, breakaway, process
 reattachment, or PID-based termination. Evidence means only owned_job_empty;
 remote work, pre-existing processes, and external side effects are not covered.
 
+A private completion port tracks process objects from before the host is created.
+Notifications are not assumed reliable: lifetime TotalProcesses must match the
+retained object census, and every object must be signaled. Missed/ambiguous
+short-lived processes, tracking limits or collector failure leave cleanup unknown
+and retain ownership; accounting zero or a quiet snapshot is never sufficient.
+
 Microsoft contracts:
 https://learn.microsoft.com/windows/win32/api/processthreadsapi/nf-processthreadsapi-createprocessw
 https://learn.microsoft.com/windows/win32/api/processthreadsapi/nf-processthreadsapi-updateprocthreadattribute
@@ -31,6 +37,14 @@ BOOL = C.c_int32
 HANDLE = C.c_void_p
 SIZE_T = C.c_size_t
 LPVOID = C.c_void_p
+
+
+class _FileTime(C.Structure):
+    _fields_ = [('low', DWORD), ('high', DWORD)]
+
+
+class _CompletionAssociation(C.Structure):
+    _fields_ = [('CompletionKey', LPVOID), ('CompletionPort', HANDLE)]
 
 
 class _Security(C.Structure):
@@ -126,6 +140,10 @@ class _Win32:
             fn = getattr(self.dll, name); fn.restype = restype; fn.argtypes = argtypes
             setattr(self, name, fn)
         bind('CreateJobObjectW', HANDLE, LPVOID, C.c_wchar_p)
+        bind('CreateIoCompletionPort', HANDLE, HANDLE, HANDLE, SIZE_T, DWORD)
+        bind('GetQueuedCompletionStatus', BOOL, HANDLE, C.POINTER(DWORD), C.POINTER(SIZE_T), C.POINTER(LPVOID), DWORD)
+        bind('OpenProcess', HANDLE, DWORD, BOOL, DWORD)
+        bind('GetProcessTimes', BOOL, HANDLE, C.POINTER(_FileTime), C.POINTER(_FileTime), C.POINTER(_FileTime), C.POINTER(_FileTime))
         bind('SetInformationJobObject', BOOL, HANDLE, C.c_int, LPVOID, DWORD)
         bind('QueryInformationJobObject', BOOL, HANDLE, C.c_int, LPVOID, DWORD, C.POINTER(DWORD))
         bind('IsProcessInJob', BOOL, HANDLE, HANDLE, C.POINTER(BOOL))
@@ -165,6 +183,182 @@ class OwnedWindowsJob:
         self._assigned = False
         self._resumed = False
         self._state_lock = threading.RLock()
+        self._tracking_lock = threading.RLock()
+        self._known = {}  # (PID, creation FILETIME) -> retained process HANDLE.
+        self._port = self._tracker = None
+        self._tracker_stop = threading.Event()
+        self._tracking_fault = None
+        self._last_total = 0
+        self._unclassified = set()
+        self._stop_proven = False
+
+    MAX_TRACKED_PROCESSES = 4096
+    MAX_TRACKING_MESSAGES = 65536
+
+    def _tracking_failed(self, code):
+        with self._tracking_lock:
+            if self._tracking_fault is None:
+                self._tracking_fault = code
+        self._tracker_stop.set()
+
+    def _identity(self, handle, pid):
+        created, exited, kernel, user = (_FileTime() for _ in range(4))
+        self._check(self._api.GetProcessTimes(handle, C.byref(created), C.byref(exited),
+                    C.byref(kernel), C.byref(user)), 'PROCESS_IDENTITY_FAILED')
+        return (pid, (int(created.high) << 32) | int(created.low))
+
+    def _retain_process(self, handle, pid, *, host=False):
+        # Caller transfers this handle; on any failure it remains retained.
+        # Non-host unclassified handles are retained separately for failure cleanup.
+        with self._tracking_lock:
+            if not host:
+                self._unclassified.add(handle)
+            if not self._job:
+                raise WindowsJobError('JOB_NOT_CREATED', owner=self)
+            belongs = BOOL()
+            self._check(self._api.IsProcessInJob(handle, self._job, C.byref(belongs)), 'TRACKED_MEMBERSHIP_QUERY_FAILED')
+            if not belongs.value:
+                raise WindowsJobError('TRACKED_MEMBERSHIP_UNVERIFIED', owner=self)
+            identity = self._identity(handle, pid)
+            old = self._known.get(identity)
+            if old is not None:
+                if host and old != handle:
+                    self._close_handle(old)
+                    self._known[identity] = handle
+                elif not host and old != handle:
+                    self._close_handle(handle)
+                if not host:
+                    self._unclassified.discard(handle)
+                return
+            if len(self._known) >= self.MAX_TRACKED_PROCESSES:
+                raise WindowsJobError('PROCESS_TRACKING_LIMIT', owner=self)
+            self._known[identity] = handle
+            if not host:
+                self._unclassified.discard(handle)
+
+    def _capture_pid(self, pid):
+        if type(pid) is not int or not 0 < pid <= 0xffffffff:
+            raise WindowsJobError('TRACKED_PID_INVALID', owner=self)
+        # The PID comes only from the private Job/port, never caller input. It is
+        # not authority: exact membership and creation identity are checked.
+        with self._tracking_lock:
+            if len(self._known) + len(self._unclassified) >= self.MAX_TRACKED_PROCESSES:
+                raise WindowsJobError('PROCESS_TRACKING_LIMIT', owner=self)
+            for key, handle in self._known.items():
+                if key[0] == pid:
+                    status = self._api.WaitForSingleObject(handle, 0)
+                    if status == 258:
+                        return
+                    if status != 0:
+                        raise self._error('TRACKED_WAIT_FAILED')
+        handle = self._api.OpenProcess(0x00100000 | 0x1000, False, pid)
+        self._check(handle, 'TRACKED_OPEN_FAILED')
+        self._retain_process(handle, pid)
+
+    def _start_tracking(self):
+        self._unclassified = set()
+        self._port = self._api.CreateIoCompletionPort(HANDLE(-1), None, 0, 1)
+        self._check(self._port, 'COMPLETION_PORT_CREATE_FAILED')
+        association = _CompletionAssociation(1, self._port)
+        self._check(self._api.SetInformationJobObject(self._job, 7, C.byref(association),
+                    C.sizeof(association)), 'COMPLETION_PORT_ASSOCIATE_FAILED')
+        # Associated while the Job is empty, before CreateProcess/ResumeThread.
+        self._tracker = threading.Thread(target=self._track_processes, daemon=True,
+                                         name='owned-job-lifetime-tracker')
+        self._tracker.start()
+
+    def _track_processes(self):
+        messages = 0
+        try:
+            while not self._tracker_stop.is_set():
+                message, key, value = DWORD(), SIZE_T(), LPVOID()
+                ok = self._api.GetQueuedCompletionStatus(self._port, C.byref(message),
+                        C.byref(key), C.byref(value), 20)
+                if not ok:
+                    if getattr(C, 'get_last_error', lambda: 0)() == 258:  # WAIT_TIMEOUT, not process proof.
+                        continue
+                    raise WindowsJobError('COMPLETION_PORT_READ_FAILED', owner=self)
+                messages += 1
+                if key.value != 1 or messages > self.MAX_TRACKING_MESSAGES:
+                    raise WindowsJobError('COMPLETION_PORT_INVALID_OR_LIMIT', owner=self)
+                if message.value == 6:  # JOB_OBJECT_MSG_NEW_PROCESS only.
+                    self._capture_pid(int(value.value or 0))
+                # EXIT/ACTIVE_PROCESS_ZERO messages are NOT process-stop proof.
+        except Exception:
+            self._tracking_failed('PROCESS_TRACKING_UNCONFIRMED')
+
+    def _current_pids(self):
+        capacity = 32
+        for _ in range(16):
+            class ProcessList(C.Structure):
+                _fields_ = [('assigned', DWORD), ('listed', DWORD), ('pids', SIZE_T * capacity)]
+            info = ProcessList()
+            ok = self._api.QueryInformationJobObject(self._job, 3, C.byref(info), C.sizeof(info), None)
+            assigned, listed = int(info.assigned), int(info.listed)
+            if assigned > self.MAX_TRACKED_PROCESSES or listed > capacity:
+                raise WindowsJobError('JOB_PROCESS_LIST_LIMIT', owner=self)
+            if ok and assigned == listed:
+                pids = [int(info.pids[i]) for i in range(listed)]
+                if len(set(pids)) != len(pids) or any(not 0 < pid <= 0xffffffff for pid in pids):
+                    raise WindowsJobError('JOB_PROCESS_LIST_INVALID', owner=self)
+                return pids
+            if not ok and getattr(C, 'get_last_error', lambda: 0)() != 234:  # ERROR_MORE_DATA
+                raise self._error('JOB_PROCESS_LIST_FAILED')
+            capacity = min(self.MAX_TRACKED_PROCESSES, max(capacity * 2, assigned))
+        raise WindowsJobError('JOB_PROCESS_LIST_UNSTABLE', owner=self)
+
+    def _capture_current(self):
+        try:
+            for pid in self._current_pids():
+                self._capture_pid(pid)
+            return True
+        except Exception:
+            # A later successful complete enumeration may recover a transient
+            # query error, but cumulative census must still cover every birth.
+            return False
+
+    def _accounting(self):
+        info = _Accounting()
+        self._check(self._api.QueryInformationJobObject(self._job, 1, C.byref(info),
+                    C.sizeof(info), None), 'JOB_QUERY_FAILED')
+        total, active = int(info.TotalProcesses), int(info.ActiveProcesses)
+        if total < self._last_total or total > self.MAX_TRACKED_PROCESSES or active > total:
+            self._tracking_failed('JOB_ACCOUNTING_INVALID_OR_LIMIT')
+            raise WindowsJobError('JOB_ACCOUNTING_INVALID_OR_LIMIT', owner=self)
+        self._last_total = total
+        return total, active
+
+    def _whole_lifetime_signaled(self):
+        with self._tracking_lock:
+            if self._tracking_fault or self._unclassified or not self._known:
+                return False
+            # Snapshot stability alone is not coverage. TotalProcesses includes
+            # every lifetime birth, including missed short-lived descendants.
+            if self._current_pids():
+                return False
+            total, active = self._accounting()
+            if active or total != len(self._known):
+                return False
+            for handle in self._known.values():
+                status = self._api.WaitForSingleObject(handle, 0)
+                if status == 258:
+                    return False
+                if status != 0:
+                    raise self._error('TRACKED_WAIT_FAILED')
+            # No birth/exit gap may hide behind the first accounting snapshot.
+            final_total, final_active = self._accounting()
+            return final_active == 0 and final_total == total and not self._current_pids()
+
+    def _stop_tracking(self, deadline):
+        self._tracker_stop.set()
+        if self._tracker is not None:
+            try:
+                self._tracker.join(max(0, deadline-time.monotonic()))
+            except RuntimeError:
+                if self._tracker.ident is not None:
+                    raise WindowsJobError('TRACKER_STOP_UNCONFIRMED', owner=self) from None
+            if self._tracker.is_alive():
+                raise WindowsJobError('TRACKER_STOP_UNCONFIRMED', owner=self)
 
     def _error(self, code):
         return WindowsJobError(code, winerror=C.get_last_error(), owner=self)
@@ -229,6 +423,7 @@ class OwnedWindowsJob:
         limits = _ExtendedLimits()
         limits.BasicLimitInformation.LimitFlags = 0x2000  # KILL_ON_JOB_CLOSE only; never BREAKAWAY flags.
         self._check(self._api.SetInformationJobObject(self._job, 9, C.byref(limits), C.sizeof(limits)), 'JOB_LIMITS_FAILED')
+        self._start_tracking()
         parent_in, child_in = self._pipe(True)
         parent_out, child_out = self._pipe(False)
         parent_err, child_err = self._pipe(False)
@@ -261,6 +456,7 @@ class OwnedWindowsJob:
         finally:
             self._api.DeleteProcThreadAttributeList(storage)
         self._verify_membership()  # Must succeed before ResumeThread; no PID lookup.
+        self._retain_process(self._process, self.pid, host=True)
         for handle in (child_in, child_out, child_err):
             self._close_handle(handle); self._raw.remove(handle)
         # Transfer parent pipe ownership to CRT descriptors before allowing launch.
@@ -282,7 +478,7 @@ class OwnedWindowsJob:
 
     def host_exited(self):
         with self._state_lock:
-            if self._closed:
+            if self._closed or self._stop_proven:
                 return True
             if not self._process:
                 return False
@@ -312,26 +508,23 @@ class OwnedWindowsJob:
                 raise WindowsJobError('JOB_CLOSED_UNVERIFIED')
             if not self._job:
                 raise WindowsJobError('JOB_NOT_CREATED')
-            info = _Accounting()
-            self._check(self._api.QueryInformationJobObject(self._job, 1, C.byref(info), C.sizeof(info), None), 'JOB_QUERY_FAILED')
-            count = int(info.ActiveProcesses)
-            return count
+            return self._accounting()[1]
 
     def wait_empty(self, timeout=5):
         timeout = _timeout(timeout)
         deadline = time.monotonic() + timeout
         with self._state_lock:
+            if self._closed or self._stop_proven:
+                return {'owned_job_empty': self._empty_observed}
             while True:
-                # Job accounting can reach zero before the retained host HANDLE
-                # becomes signalled. Require both facts before reporting success.
-                empty = self.active_processes() == 0
-                if empty and self.host_exited():
+                captured = self._capture_current()
+                if captured and self.host_exited() and self._whole_lifetime_signaled():
                     if self._assigned:
                         self._empty_observed = True
-                    return {'owned_job_empty':True}
+                    return {'owned_job_empty': True}
                 remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    return {'owned_job_empty':False}
+                if remaining <= 0 or self._tracking_fault:
+                    return {'owned_job_empty': False}
                 time.sleep(min(.02, remaining))
 
     def terminate(self, timeout=5):
@@ -342,6 +535,7 @@ class OwnedWindowsJob:
                 return {'owned_job_empty':self._empty_observed}
             if not self._job:
                 raise WindowsJobError('JOB_NOT_CREATED')
+            self._capture_current()  # Capture errors never prevent containment kill.
             self._check(self._api.TerminateJobObject(self._job, 1), 'JOB_TERMINATE_FAILED')
             return self.wait_empty(max(0, deadline-time.monotonic()))
 
@@ -351,20 +545,27 @@ class OwnedWindowsJob:
             if self._closed:
                 return {'owned_job_empty':self._empty_observed}
             deadline = time.monotonic() + timeout
-            # Membership-check failure still leaves a suspended host needing disposal.
-            if self._process and not self.host_exited():
+            if not self._stop_proven:
                 if self._assigned:
-                    self._check(self._api.TerminateJobObject(self._job, 1), 'JOB_TERMINATE_FAILED')
-                else:
-                    self._check(self._api.TerminateProcess(self._process, 1), 'HOST_TERMINATE_FAILED')
-                milliseconds = max(0, int((deadline-time.monotonic())*1000))
-                if self._api.WaitForSingleObject(self._process, milliseconds) != 0:
-                    raise WindowsJobError('HOST_STOP_UNCONFIRMED', owner=self)
-            if self._assigned:
-                # Host may exit while descendants continue. Always terminate job.
-                result = self.terminate(max(0, deadline-time.monotonic()))
-                if not result['owned_job_empty']:
-                    raise WindowsJobError('JOB_STOP_UNCONFIRMED', owner=self)
+                    self._capture_current()
+                # Membership-check failure leaves a suspended host for disposal.
+                if self._process and not self.host_exited():
+                    if self._assigned:
+                        self._check(self._api.TerminateJobObject(self._job, 1), 'JOB_TERMINATE_FAILED')
+                    else:
+                        self._check(self._api.TerminateProcess(self._process, 1), 'HOST_TERMINATE_FAILED')
+                    milliseconds = max(0, int((deadline-time.monotonic())*1000))
+                    if self._api.WaitForSingleObject(self._process, milliseconds) != 0:
+                        raise WindowsJobError('HOST_STOP_UNCONFIRMED', owner=self)
+                if self._assigned:
+                    result = self.terminate(max(0, deadline-time.monotonic()))
+                    if not result['owned_job_empty']:
+                        raise WindowsJobError('JOB_LIFETIME_STOP_UNCONFIRMED', owner=self)
+                self._stop_tracking(deadline)
+                # Tracker failure cannot arrive unnoticed during join.
+                if self._assigned and self._tracking_fault:
+                    raise WindowsJobError('JOB_LIFETIME_STOP_UNCONFIRMED', owner=self)
+                self._stop_proven = True
             # Only after stop confirmation release owned resources. No proof by PID.
             for name in ('stdin', 'stdout', 'stderr'):
                 stream = getattr(self, name)
@@ -376,9 +577,22 @@ class OwnedWindowsJob:
                     setattr(self, name, None)
             for handle in tuple(self._raw):
                 self._close_handle(handle); self._raw.remove(handle)
+            with self._tracking_lock:
+                for identity, handle in tuple(self._known.items()):
+                    if handle != self._process:
+                        self._close_handle(handle)
+                        del self._known[identity]
+                for handle in tuple(self._unclassified):
+                    self._close_handle(handle)
+                    self._unclassified.remove(handle)
+            if self._port:
+                self._close_handle(self._port)
+                self._port = None
             for name in ('_thread', '_process', '_job'):
                 handle = getattr(self, name)
                 self._close_handle(handle); setattr(self, name, None)
+                if name == '_process':
+                    self._known = {key: value for key, value in self._known.items() if value != handle}
             self._closed = True
             return {'owned_job_empty':self._empty_observed}
 
