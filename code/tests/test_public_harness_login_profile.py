@@ -243,6 +243,37 @@ class ProfileFixtureTests(unittest.TestCase):
         security.default_owner_sid = security.sid
         self.assertFalse(security._owner_allowed('S-1-5-32-544', False))
 
+    def test_quarantine_clears_confirmed_digest_despite_unrelated_native_acl_failure(self):
+        profile = self.confirmed_profile()
+        native = profile.root / 'config' / 'opaque.info'
+        native.write_bytes(b'synthetic-no-credential')
+        original = profile._security.check
+        def check(path, *args, **kwargs):
+            if path == native:
+                raise storage.ProfileError()
+            return original(path, *args, **kwargs)
+        with patch.object(profile._security, 'check', check):
+            with self.assertRaises(storage.ProfileError):
+                profile.verify()
+            profile.quarantine()
+            self.assertEqual(profile.state, 'unknown_retained')
+            self.assertIsNone(profile.expected_account_digest)
+            with self.assertRaises(storage.ProfileError):
+                profile.verify()
+            self.assertFalse(profile._lock.closed)
+        data = json.loads((profile.root / storage.MANIFEST).read_text())
+        self.assertIsNone(data['confirmed_account_digest'])
+        self.assertEqual(data['state'], 'unknown_retained')
+        self.assertTrue(native.exists())
+
+    def test_quarantine_requires_unchanged_root_and_current_lock(self):
+        profile = self.confirmed_profile()
+        with patch.object(profile._security, 'check', side_effect=storage.ProfileError()):
+            with self.assertRaises(storage.ProfileError):
+                profile.quarantine()
+        self.assertFalse(profile._lock.closed)
+        self.assertEqual(profile.state, 'authenticated_confirmed')
+
 
 @unittest.skipUnless(os.name == 'nt', 'Actual Windows ACL and byte lock')
 class ActualWindowsProfileTests(unittest.TestCase):

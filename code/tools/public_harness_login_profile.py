@@ -248,11 +248,22 @@ class ManagedProfile:
     def expected_account_digest(self):
         return self._data['confirmed_account_digest']
 
+    def _control(self):
+        """Validate only the owned control capability; never native file contents."""
+        require(not self._closed and not self._lock.closed
+                and _physical(self.root, self._security) == self._identity)
+        self._security.check(self.root, True, protected=True)
+        lock_path = self.root / LOCK
+        require(_identity(_info(lock_path, False)) == _identity(os.fstat(self._lock.fileno())))
+        self._security.check(lock_path, False)
+        current = _read_manifest(self.root, self._security)
+        require(current == self._data)
+        return current
+
     @_api
     def verify(self):
         """Metadata/ACL walk only. Never read any native credential, backup or log."""
-        require(not self._closed and _physical(self.root, self._security) == self._identity)
-        self._security.check(self.root, True, protected=True)
+        self._control()
         names = set()
         with os.scandir(self.root) as entries:
             for index, entry in enumerate(entries):
@@ -314,10 +325,22 @@ class ManagedProfile:
 
     @_api
     def quarantine(self):
-        """Irreversible automatic quarantine, never logout, deletion or permission repair."""
-        if self.state in ('unknown_retained', 'execution_unknown'):
-            self.verify(); return
-        self._replace('execution_unknown' if self.state == 'execution_started' else 'unknown_retained', None)
+        """Reduce authority even when an unrelated native file fails its ACL check.
+
+        Root, lock and own metadata must still be valid. This does NOT verify the
+        whole profile or cleanup, and does not permit the caller to release an
+        uncertain owned process/lock. Never logout, delete or repair permissions.
+        """
+        current = self._control()
+        state = 'execution_unknown' if current['state'] in ('execution_started', 'execution_unknown') else 'unknown_retained'
+        data = dict(current, state=state, confirmed_account_digest=None)
+        _check_manifest(data, self.root.name, self._security.sid)
+        if data != current:
+            temporary = self.root / ('metadata-' + uuid.uuid4().hex + '.tmp')
+            _write_new(temporary, _json(data), self._security)
+            os.replace(temporary, self.root / MANIFEST)
+        self._data = data
+        self._control()
         self._execution_owner = False
 
     @_api
