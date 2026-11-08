@@ -12,6 +12,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'tools'))
 import public_harness_login_profile as storage
+RealSecurity = storage.WinSecurity
 
 
 class FakeSecurity:
@@ -230,6 +231,17 @@ class ProfileFixtureTests(unittest.TestCase):
         self.assertTrue(storage._user_sid(FakeSecurity.sid))
         for sid in ('S-1-5-18', 'S-1-5-19', 'S-1-5-20', 'S-1-5-21)D:', None, True):
             self.assertFalse(storage._user_sid(sid))
+
+    def test_owner_fallback_is_exact_os_token_owner_and_never_protected_root(self):
+        security = object.__new__(RealSecurity)
+        security.sid = FakeSecurity.sid
+        security.default_owner_sid = 'S-1-5-32-544'
+        self.assertTrue(security._owner_allowed(security.sid, True))
+        self.assertTrue(security._owner_allowed(security.default_owner_sid, False))
+        self.assertFalse(security._owner_allowed(security.default_owner_sid, True))
+        self.assertFalse(security._owner_allowed('S-1-5-21-999', False))
+        security.default_owner_sid = security.sid
+        self.assertFalse(security._owner_allowed('S-1-5-32-544', False))
 
 
 @unittest.skipUnless(os.name == 'nt', 'Actual Windows ACL and byte lock')

@@ -110,6 +110,14 @@ class WinSecurity:
             require(self.a.GetTokenInformation(token, 1, buffer, size.value, C.byref(size)))
             self.sid = self._sid(C.c_void_p.from_buffer(buffer).value)
             require(_user_sid(self.sid))
+            # An elevated Windows token can default new files to a group owner
+            # (TokenOwner), rather than TokenUser. This adds no DACL principal.
+            owner_size = C.c_uint32()
+            self.a.GetTokenInformation(token, 4, None, 0, C.byref(owner_size))
+            require(0 < owner_size.value <= 65536)
+            owner_buffer = C.create_string_buffer(owner_size.value)
+            require(self.a.GetTokenInformation(token, 4, owner_buffer, owner_size.value, C.byref(owner_size)))
+            self.default_owner_sid = self._sid(C.c_void_p.from_buffer(owner_buffer).value)
         finally:
             self.k.CloseHandle(token)
 
@@ -139,12 +147,16 @@ class WinSecurity:
             self.k.LocalFree(descriptor)
         self.check(path, True, protected=True)
 
+    def _owner_allowed(self, owner, protected):
+        return owner == self.sid or (not protected and owner == self.default_owner_sid)
+
     def check(self, path, directory, protected=False):
         owner, acl, descriptor = C.c_void_p(), C.c_void_p(), C.c_void_p()
         require(self.a.GetNamedSecurityInfoW(str(path), 1, 5, C.byref(owner), None,
                     C.byref(acl), None, C.byref(descriptor)) == 0)
         try:
-            require(self._sid(owner) == self.sid and acl.value)
+            require(acl.value)
+            require(self._owner_allowed(self._sid(owner), protected))
             control, revision = C.c_uint16(), C.c_uint32()
             require(self.a.GetSecurityDescriptorControl(descriptor, C.byref(control), C.byref(revision)))
             require(control.value & 4)  # SE_DACL_PRESENT; no NULL/unrestricted DACL.
