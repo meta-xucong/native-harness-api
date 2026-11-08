@@ -190,3 +190,32 @@ As before, empty hosted HOME/config and owned Job are not a network/filesystem
 sandbox. The exact source and command require independent review before this
 new automatic push-triggered experiment. Handshake success alone would not
 establish account reuse or real-use readiness.
+
+### Revision 4 actual result: native initialization established
+
+Reviewed source `2274a43544d4737fa57ba475877ddfe249ace196` completed exactly one
+[hosted experiment](https://github.com/meta-xucong/native-harness-api/actions/runs/42431493208),
+push event / attempt 1. Actual Windows prerequisites passed: 32 self-authored Node
+scenarios and 372 Python tests with 4 reported skips; all four Windows library
+lifecycle tests actually passed.
+
+The downloaded artifact's sole schema-3 summary reports successful pinned entry
+verification, import, harness/client construction, returned connection and
+protocolVersion 1. `elicitation_seen=0`: this diagnostic received no elicitation.
+Client/harness close and harness settlement all passed. The host exited naturally
+with code 0, the owned Job was naturally empty, and host/Job/handle/IO cleanup
+all passed. The routine elapsed 4400 ms, including setup/cleanup, not just connect.
+Stdin/stdout were 0 bytes; 158 stderr bytes were discarded and are not interpreted.
+
+Artifact 13597836437: ZIP 517 bytes, SHA256
+`8603aac9462c2d629b569a05f88e7f83e7eef72652fbcfbfc26852dab1e349bb`.
+Its only member is `library-connect-evidence-sanitized-summary.json`, 729 bytes,
+SHA256 `ef2bc303d3b550b6da282814fda930d7ad8b3cf4d095b300543c11c0e3c34373`.
+This establishes this fixed official library's empty-account in-memory handshake
+and bounded owned cleanup. It does not establish GUI login inheritance, the user's
+older installed version, native account/Product readiness, session/model/prompt
+execution, provider model identity, or an enabled API channel. The successful
+capability correction is consistent with the static mismatch; the historical
+failed run's exact exception remains unknown. No retry, local-PC action, account
+inspection, real model call, merge or deployment occurred. Product remains
+NOT_READY_FOR_DIRECT_REAL_USE.
