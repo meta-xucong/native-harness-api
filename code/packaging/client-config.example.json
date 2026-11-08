@@ -4,16 +4,27 @@
   "source": "<copy-source-from-bridge>",
   "ledger_instance": "<copy-ledger-from-bridge>",
   "bridge_url": "https://your-authorized-bridge.example",
-  "owner": ["user-<numeric-sub2api-user-id>", "key-<numeric-sub2api-key-id>"],
-  "binding": {
-    "binding_id": "<matching-binding-id>",
-    "revision": 1,
-    "model_alias": "workbuddy-your-model",
-    "native_model": "<choose-from-local-model-catalog>"
-  },
+  "owner": [
+    "user-<numeric-sub2api-user-id>",
+    "key-<numeric-sub2api-key-id>"
+  ],
   "assets_root": "C:/NativeHarness/assets",
   "profile_root": "C:/YourProfiles/profile-created-by-login",
   "accepting_new": false,
   "execution_timeout": 120,
-  "cleanup_timeout": 10
+  "cleanup_timeout": 10,
+  "bindings": [
+    {
+      "binding_id": "<matching-binding-a-id>",
+      "revision": 1,
+      "model_alias": "workbuddy-model-a",
+      "native_model": "<first-exact-model-id>"
+    },
+    {
+      "binding_id": "<matching-binding-b-id>",
+      "revision": 1,
+      "model_alias": "workbuddy-model-b",
+      "native_model": "<second-exact-model-id>"
+    }
+  ]
 }

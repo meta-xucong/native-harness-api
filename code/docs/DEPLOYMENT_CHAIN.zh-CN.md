@@ -31,7 +31,7 @@ docker build -f code/deploy/facade.Dockerfile -t native-facade:YOUR_REVIEWED_REV
 
 ## 2. 只填写一次真实信息，生成一致配置
 
-先在 Windows 运行客户端的显式 login 和 models 命令；这是用户本地动作，不读取旧桌面凭据。记录 profile 路径，并从目录选一个明确模型 ID。用户/API-key 的 numeric ID 从现有 Sub2API 管理后台对应用户及 key 的记录取得，不填 API-key 字符串，不猜数字；示例的 7/9 必须换成真实 ID。
+先在 Windows 运行客户端的显式 login 和 models 命令；这是用户本地动作，不读取旧桌面凭据。记录 profile 路径，并从目录选一个或多个明确模型 ID。用户/API-key 的 numeric ID 从现有 Sub2API 管理后台对应用户及 key 的记录取得，不填 API-key 字符串，不猜数字；示例的 7/9 必须换成真实 ID。
 
 复制 `code/deploy/deployment-spec.example.json`，修改 HTTPS Bridge origin、真实 user/key ID、模型 alias/native ID、Windows 安装/profile 路径和独立 VPS 数据目录。执行：
 
@@ -49,7 +49,7 @@ python code/tools/prepare_native_deployment.py --spec YOUR-SPEC.json --output NE
 
 生成文件在Linux默认600，仅创建者可读。部署时按实际服务身份授予最小读取权限：宿主systemd的native-harness用户或容器UID65532必须能读对应facade.json；可用专属组和640配置权限，或将非秘密配置所有者设为服务用户。不要为了修复读取失败把secret文件改成全局可读。Compose的env_file由运行Compose的受信管理员读取并注入，不能挂载到Windows或公开目录。
 
-生成器自动把数字 IDs 映射成 `user-<ID>` / `key-<ID>`，并在三仓使用同一完整 binding。生成的所有新请求开关都关闭，Sub2API 功能 enabled 但不准入新请求。
+生成器自动把数字 IDs 映射成 `user-<ID>` / `key-<ID>`，并在三仓使用同一组完整 bindings。生成的所有新请求开关都关闭，Sub2API 功能 enabled 但不准入新请求。
 
 ## 3. 三段服务密钥分别配置
 
@@ -92,3 +92,13 @@ Client.cmd preflight --config C:\path\windows-node.json
 Facade 的有限等待可能先返回 504。此时不能生成新 key、换模型或换 body；稍后仅重发**同 key、同 body**获取相同操作的状态/结果。相同请求不会换路由重跑。未知进程或 cleanup 情况需要保留 owner 进程与全部账本，不能删除 profile、清库或新建任务伪装重试。
 
 当前是单 owner、单槽、非收费、非流式、单 user 文本模式；下游工具 schema、tool-role 和需要原生交互审批的请求不支持。目录/账号隔离不是多租户安全沙箱，官方程序可能运行不需要额外审批的原生工具。完成这些软件配置不证明商业转供许可或生产服务已验收。
+
+## 多模型共用一台电脑和一个账号
+
+首次 spec 可用 `models` 列表，每项仅 `model_alias` 与 `native_model`，最多32项；每个别名独立生成 Sub2API route、冻结 binding 和 Bridge 能力，但 Node/profile/journal/账号/物理执行槽只有一个。`model_alias` 必须唯一且以 `workbuddy-` 开头。旧顶层单个 model_alias/native_model 仍兼容；不得同时提供两种形式。
+
+生成器以保存的 binding identity seed 和别名生成稳定binding ID，列表排序不改变 ID。配置加载接受 `bindings` 数组或旧 `binding` 单项，不能混填。Facade列出全部准入别名，Node心跳一次报告全部绑定。不同模型不是并行槽：Runner持有同一OS锁直到当前原生调用及证据写回完成；Bridge仍以现有单槽规则拒忙。未决/未知执行将阻止所有模型继续启动，不自动跨模型重试或复制profile来避开锁。
+
+后续修改映射时先停止新准入并处理已有任务；保持source、ledger、Node/profile/journal和binding身份，改变某映射语义必须升级对应revision并同步三仓，不重新生成ledger来重试。移除模型只禁止新任务，已有冻结操作仍优先只读恢复其证据；缺少证据永不触发重新推理。多模型路由不代表多租户/计费/外部工具调用兼容，也不代表真实模型已经实测。
+
+可选Sub2API GET预检的 `sub2api_model_listed` 现表示所有本地配置别名都出现在返回目录中，而非仅第一项。关闭admission时可为false；该检查仍不做推理或证明实时账号状态。

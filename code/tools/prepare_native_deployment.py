@@ -9,7 +9,8 @@ import uuid
 from urllib.parse import urlsplit
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
-from native_harness_api.contracts import Binding, identifier
+from native_harness_api.contracts import Binding, identifier, digest
+from native_harness_api.native_bindings import validate_bindings
 from native_harness_api.bridge_client import origin
 from native_harness_api.native_facade_runtime import NativeFacadeConfig
 
@@ -18,7 +19,8 @@ SPEC_KEYS = {'bridge_origin', 'user_id', 'api_key_id', 'model_alias', 'native_mo
 
 
 def build_plan(spec, identities=None):
-    if type(spec) is not dict or set(spec) != SPEC_KEYS:
+    multi_keys = (SPEC_KEYS - {'model_alias', 'native_model'}) | {'models'}
+    if type(spec) is not dict or set(spec) not in (SPEC_KEYS, multi_keys):
         raise ValueError('Exact deployment specification required')
     remote = spec['bridge_origin']; origin(remote)
     parsed = urlsplit(remote)
@@ -32,9 +34,16 @@ def build_plan(spec, identities=None):
         if (type(value) is not str or not re.fullmatch(r'[A-Za-z]:[\\/].+', value)
                 or '..' in PureWindowsPath(value).parts or any(ord(c) < 32 for c in value)):
             raise ValueError('Absolute Windows fixed-drive paths required')
-    for key in ('model_alias', 'native_model'):
-        if type(spec[key]) is not str or any(c in spec[key] for c in '<>'):
-            raise ValueError('Choose a real model ID, not a template placeholder')
+    multi = 'models' in spec
+    models = spec['models'] if multi else [{k:spec[k] for k in ('model_alias','native_model')}]
+    if type(models) is not list or not 1 <= len(models) <= 32:
+        raise ValueError('One to 32 model mappings required')
+    for model in models:
+        if type(model) is not dict or set(model) != {'model_alias','native_model'}:
+            raise ValueError('Exact model mappings required')
+        for value in model.values():
+            if type(value) is not str or any(c in value for c in '<>'):
+                raise ValueError('Choose real model IDs, not placeholders')
     state = spec['bridge_data_dir']
     if type(state) is not str or not state.startswith('/') or '..' in Path(state).parts or any(ord(c) < 32 for c in state):
         raise ValueError('Explicit absolute Linux Bridge state path required')
@@ -42,10 +51,14 @@ def build_plan(spec, identities=None):
     if set(identities) != {'source','ledger','workspace','node','executor','binding'}:
         raise ValueError('Invalid deployment identities')
     for value in identities.values(): identifier(value)
-    binding = Binding(identities['binding'], 1, spec['model_alias'], spec['native_model']).wire()
+    bindings = validate_bindings(tuple(Binding(
+        ('binding-'+digest({'seed':identities['binding'],'alias':m['model_alias']})[:32]) if multi else identities['binding'],
+        1, m['model_alias'], m['native_model']) for m in models))
+    binding_wires = [b.wire() for b in bindings]
     owner = ['user-'+str(spec['user_id']), 'key-'+str(spec['api_key_id'])]
     common = {'mode':'workbuddy_local_trial', 'source':identities['source'], 'ledger_instance':identities['ledger'],
-              'bridge_url':remote, 'binding':binding, 'owner':owner, 'accepting_new':False}
+              'bridge_url':remote, 'owner':owner, 'accepting_new':False}
+    common.update({'bindings':binding_wires} if multi else {'binding':binding_wires[0]})
     facade = dict(common, adapter='facade_only', port=8790)
     NativeFacadeConfig.from_value(facade)
     node = dict(common, adapter='public_sfe', assets_root=str(PureWindowsPath(spec['windows_bundle_root'])/'assets'),
@@ -54,12 +67,14 @@ def build_plan(spec, identities=None):
               'node_id':identities['node'], 'executor_instance':identities['executor'],
               'host':'127.0.0.1', 'port':8787, 'dispatch_mode':'node_pull', 'enabled_profiles':['fake-image'],
               'accepting_new_tasks':False, 'harness':{'ledger_instance':identities['ledger'], 'allowed_owners':[owner],
-              'bindings':[binding], 'accepting_new':False, 'execution_mode':'workbuddy_local_trial'}}
-    route = {'execution_mode':'workbuddy_local_trial','origin':'http://127.0.0.1:8790',
+              'bindings':binding_wires, 'accepting_new':False, 'execution_mode':'workbuddy_local_trial'}}
+    routes = {}
+    for binding in binding_wires:
+        routes[binding['model_alias']] = {'execution_mode':'workbuddy_local_trial','origin':'http://127.0.0.1:8790',
              'credential_env':'NATIVE_FACADE_SERVICE_TOKEN','source':identities['source'],
              'ledger_instance':identities['ledger'], **binding}
     sub2api = {'gateway':{'native_harness':{'enabled':True,'accepting_new':False,'allowed_user_id':spec['user_id'],
-               'allowed_api_key_id':spec['api_key_id'],'routes':{spec['model_alias']:route}}}}
+               'allowed_api_key_id':spec['api_key_id'],'routes':routes}}}
     return {'bridge.json':bridge, 'facade.json':facade, 'windows-node.json':node,
             'sub2api.native-harness.yaml':sub2api,
             'deployment-identities.json':{'schema_version':1, 'identities':identities, 'specification':spec,

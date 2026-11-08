@@ -11,6 +11,7 @@ import time
 
 from .runtime import RuntimeConfig
 from .contracts import Binding
+from .native_bindings import parse_bindings, validate_bindings
 from .bridge_client import BridgeClient, NodeClient
 from .facade import Facade, Service
 from .node import Journal, NodePolicy, Runner
@@ -42,6 +43,7 @@ def _tools():
 class NativeTrialConfig(RuntimeConfig):
     assets_root: Path = Path('.')
     profile_root: Path = Path('.')
+    bindings: tuple[Binding, ...] = ()
     execution_timeout: float = 120
     cleanup_timeout: float = 10
 
@@ -50,7 +52,7 @@ class NativeTrialConfig(RuntimeConfig):
         data = dict(value)
         if data.pop('mode', None) != 'workbuddy_local_trial' or data.pop('adapter', None) != 'public_sfe':
             raise ValueError('Explicit local trial and public_sfe required')
-        data['binding'] = Binding(**data['binding'])
+        parse_bindings(data)
         owner = data.pop('owner')
         if type(owner) is not list or len(owner) != 2: raise ValueError('One trusted owner required')
         data['owner'] = tuple(owner)
@@ -62,10 +64,14 @@ class NativeTrialConfig(RuntimeConfig):
         data['data_dir'] = expected
         obj = cls(**data); obj.validate(); return obj
 
+    @property
+    def configured_bindings(self):
+        return self.bindings or (self.binding,)
+
     def _validate_binding(self):
-        if (not self.binding.model_alias.startswith('workbuddy-') or self.binding.native_model.startswith('fake-')
-                or self.binding.native_model.casefold() in {'auto', 'automatic', 'default'}):
-            raise ValueError('Explicit WorkBuddy binding required')
+        validate_bindings(self.configured_bindings)
+        if self.bindings and self.binding != self.bindings[0]:
+            raise ValueError('Inconsistent compatibility binding')
 
     def validate(self):
         super().validate()
@@ -84,7 +90,7 @@ class NativeTrialConfig(RuntimeConfig):
         facade = self.credential(self.facade_token_env, environ)
         if source == facade: raise ValueError('Distinct credentials required')
         bridge = BridgeClient(self.bridge_url, source, self.ledger_instance)
-        service = Service(self.source, bridge, {self.binding.model_alias:self.binding}, self.accepting_new, self.owner)
+        service = Service(self.source, bridge, {b.model_alias:b for b in self.configured_bindings}, self.accepting_new, self.owner)
         return Facade({facade:service}, wait_seconds=self.wait_seconds, mode='workbuddy_local_trial')
 
     def runner(self, environ=None):
@@ -99,12 +105,12 @@ class NativeTrialConfig(RuntimeConfig):
             evidence_root.mkdir(exist_ok=True)
             profile.verify()
         client = NodeClient(self.bridge_url, self.credential(self.node_token_env, environ))
-        policy = NodePolicy(self.source, self.ledger_instance, frozenset({self.owner}), (self.binding,), mode='workbuddy_local_trial')
-        adapter = PublicSfeAdapter(evidence_root, binding=self.binding, invoke=self.invoke)
+        policy = NodePolicy(self.source, self.ledger_instance, frozenset({self.owner}), self.configured_bindings, mode='workbuddy_local_trial')
+        adapter = PublicSfeAdapter(evidence_root, bindings=self.configured_bindings, invoke=self.invoke)
         return Runner(client, journal, adapter, policy=policy)
 
     def invoke(self, *, model_id, messages):
-        if model_id != self.binding.native_model or len(messages) != 1 or messages[0]['role'] != 'user':
+        if model_id not in {b.native_model for b in self.configured_bindings} or len(messages) != 1 or messages[0]['role'] != 'user':
             raise ValueError('One bound user prompt required')
         verify_assets, _, open_profile = _tools()
         from .supervised_acp_transport import SupervisedACPTransport

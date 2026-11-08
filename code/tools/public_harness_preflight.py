@@ -48,7 +48,7 @@ def check_sub2api(config, base_url, environ=None):
         if type(model) is not dict or model.get('object')!='model' or type(model.get('id')) is not str:
             raise ValueError('Unexpected model list')
     return {'sub2api_auth_verified':True,'sub2api_accepting_new':status['accepting_new'],
-            'sub2api_model_listed':any(m['id']==config.binding.model_alias for m in value['data']),
+            'sub2api_model_listed':all(b.model_alias in {m['id'] for m in value['data']} for b in config.configured_bindings),
             'sub2api_live_readiness_checked':False}
 
 

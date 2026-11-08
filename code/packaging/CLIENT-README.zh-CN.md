@@ -7,7 +7,7 @@
 1. 将整个 ZIP 解压至本地固定磁盘的普通目录。保留 `runtime`、`assets`、`src`、`tools` 的全部文件，不只复制 EXE。不要覆盖已有 profile 或数据库。
 2. 命令行运行 `Client.cmd verify-assets`，检查全部固定官方资产。
 3. 阅读 `Client.cmd login --explain`，再运行 `Client.cmd login --profile-parent "C:\你的专用账户父目录"`。父目录须已存在；程序会新建受限 profile。由你在官方页面认证，浏览器可能使用默认浏览器已有网站会话，请核对正确账号。程序不会从旧 WorkBuddy 目录迁移凭据。
-4. 单独运行 `Client.cmd models --profile "刚创建的profile绝对路径"`。该动作验证当前账号并新建空会话读取模型目录，不发送prompt；完成关闭后才显示可用模型ID。选择一个明确模型ID，不使用auto/default。
+4. 单独运行 `Client.cmd models --profile "刚创建的profile绝对路径"`。该动作验证当前账号并新建空会话读取模型目录，不发送prompt；完成关闭后才显示可用模型ID。选择一个或多个明确模型ID，不使用auto/default。节点配置的 `bindings` 支持最多32个别名映射，同一个登录profile、Node进程和journal共享一个执行槽，按请求模型选择并逐次实时回读验证。不要每个模型启动一个Node或复制profile。旧单个 `binding` 配置仍可使用，但不能和 `bindings` 同时填写。
 5. 服务端先按本包 `DEPLOYMENT_CHAIN.zh-CN.md` 配置 VPS Bridge + Facade + Sub2API，并生成匹配的 `windows-node.json`。Windows 不运行对公网服务的 Facade、不开放入站端口；Node 仅出站 HTTPS。复制服务端生成的节点配置，确认本包 assets 路径和本地 profile 路径准确。Windows 只设置 `NATIVE_BRIDGE_NODE_TOKEN`，不复制服务端 Source/Facade secret，更不能填 WorkBuddy token。先运行 `Client.cmd preflight --config "节点配置绝对路径"`，再 `Client.cmd node --config "节点配置绝对路径"`。真实模型身份/账号仍由每次原生执行实时校验。
 
 `client-config.example.json` 是字段说明，不是已经匹配服务端的可用配置；owner 必须形如 `user-7` / `key-9`，不能填裸数字或 API-key 字符串。

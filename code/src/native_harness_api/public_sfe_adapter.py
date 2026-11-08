@@ -5,6 +5,7 @@ This component does not discover software, authenticate, approve tools or enable
 production routing. SQLite records only one-shot intent and sanitized evidence.
 """
 from contextlib import contextmanager
+import copy
 import json
 from pathlib import Path
 import sqlite3
@@ -59,15 +60,21 @@ def project_result(value, model):
 class PublicSfeAdapter:
     synthetic = False
 
-    def __init__(self, root, *, binding, invoke):
-        if type(binding) is not Binding or not callable(invoke):
-            raise ValueError('Explicit binding and invocation owner required')
+    def __init__(self, root, *, binding=None, bindings=None, invoke):
+        if (binding is None) == (bindings is None):
+            raise ValueError('Explicit binding or bindings required')
+        approved = (binding,) if bindings is None else bindings
+        if (type(approved) is not tuple or not 1 <= len(approved) <= 32 or
+                any(type(b) is not Binding for b in approved) or not callable(invoke) or
+                len({b.model_alias for b in approved}) != len(approved) or
+                len({b.binding_id for b in approved}) != len(approved)):
+            raise ValueError('Explicit unique bindings and invocation owner required')
         self.root = Path(root)
         if not self.root.is_absolute():
             raise ValueError('Existing dedicated absolute evidence directory required')
         self.db = self.root / 'sfe-evidence.sqlite'
         self._check_storage()
-        self.binding, self.invoke = binding, invoke
+        self.bindings, self.invoke = approved, invoke
         with self._connect() as con:
             con.execute('CREATE TABLE IF NOT EXISTS evidence (grant_id TEXT PRIMARY KEY, task_id TEXT UNIQUE NOT NULL, request_hash TEXT NOT NULL, result TEXT)')
 
@@ -93,22 +100,24 @@ class PublicSfeAdapter:
             with con: yield con
         finally: con.close()
 
-    def _identity(self, task, grant):
+    def _identity(self, task, grant, *, require_current=True):
         task_id = identifier(task['remote_task_id'])
         grant_id = identifier(grant['start_grant_id'])
         frozen = task['request']
         request = normalize_request(frozen['client_request'])
-        if (frozen['binding'] != self.binding.wire() or request['model'] != self.binding.model_alias or
+        binding = Binding(**frozen['binding'])
+        if ((require_current and binding not in self.bindings) or request['model'] != binding.model_alias or
                 frozen['messages'] != request['messages'] or digest(request) != task['request_digest']):
             raise ValueError('Task binding/request mismatch')
         if len(request['messages']) != 1 or request['messages'][0]['role'] != 'user':
             raise ValueError('Native local trial supports exactly one user message')
         # Include owner/ledger routing in the immutable execution identity.
-        request_hash = digest({'request': request, 'binding': self.binding.wire(),
+        request_hash = digest({'request': request, 'binding': binding.wire(),
                                'identity': task['identity'], 'ledger': task['ledger_instance']})
         return task_id, grant_id, request_hash, request
 
     def start(self, task, grant):
+        task, grant = copy.deepcopy(task), copy.deepcopy(grant)
         task_id, grant_id, fingerprint, request = self._identity(task, grant)
         with self._connect() as con:
             # BEGIN IMMEDIATE serializes cross-process admission before native IO.
@@ -121,8 +130,9 @@ class PublicSfeAdapter:
         # Committed intent survives every exception, interruption or process loss.
         # No exception message or raw vendor evidence is persisted or forwarded.
         try:
-            evidence = self.invoke(model_id=self.binding.native_model, messages=request['messages'])
-            result = project_result(evidence, self.binding.native_model)
+            model = task['request']['binding']['native_model']
+            evidence = self.invoke(model_id=model, messages=request['messages'])
+            result = project_result(evidence, model)
         except Exception:
             result = dict(PENDING)
         with self._connect() as con:
@@ -130,7 +140,7 @@ class PublicSfeAdapter:
         return result
 
     def reconcile(self, task, grant):
-        task_id, grant_id, fingerprint, _ = self._identity(task, grant)
+        task_id, grant_id, fingerprint, _ = self._identity(task, grant, require_current=False)
         with self._connect() as con:
             row = con.execute('SELECT task_id,request_hash,result FROM evidence WHERE grant_id=?', (grant_id,)).fetchone()
         if row is None: return None
