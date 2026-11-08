@@ -17,6 +17,7 @@ const client = {
   initialization:{protocolVersion:1},
   async connect(){},
   async close(){},
+  product:{async read(){return {state:'ready',mode:'managed',productName:'WorkBuddy',applicationName:'WorkBuddy',productVersion:'5.9.3'};}},
   on(name, handler) { handlers.set(name, handler); return () => handlers.delete(name); },
   session: {
     async new() { return {sessionId:'synthetic-root',configOptions:catalog()}; },
@@ -55,6 +56,11 @@ const harness={closed:new Promise(resolve=>{settleHarness=resolve;}),async close
   settleHarness();
 }};
 const shim=await createExternalRuntime({verifyEntry:async()=>true,
+  loadProduct:async()=>({schemaVersion:1,kind:'overlay',configuration:{
+    productName:'WorkBuddy',applicationName:'WorkBuddy',productVersion:'5.9.3',
+    authentication:{id:'workbuddy-desktop',type:'account-scoped-external-link',attributes:{platform:'workbuddy'}},
+    endpoint:'https://synthetic.invalid',platform:'synthetic',config:{fixtureOnly:true}
+  }}),
   loadApi:async()=>({createHarness:async()=>harness,createClient:()=>client}),
   configDir:process.cwd(),expectedCwd:process.cwd(),emit:line=>{
   process.stdout.write(line);

@@ -62,15 +62,23 @@ No application deadline, durable journal, recovery, model accounting, real SDK
 readiness or native account proof is implemented in this module. Recreating a
 shim cannot authorize retrying an uncertain native operation.
 
-## Injected external-only runtime assembly
+## Injected external-account / WorkBuddy Product runtime assembly
 
 `beta15_external_runtime.mjs` composes the already-tested startup contract without
 importing the vendor bundle itself. `createExternalRuntime` requires `verifyEntry`
-(explicit true), `loadApi`, `configDir`, `expectedCwd` and `emit` callbacks/values.
-Only after verification may the injected API loader run. The assembly uses
-`createHarness({configDir,strictMcpConfig:true,signal})`, creates an external
-account/product client with form+URL elicitation capabilities, installs cancel-only
-permission/elicitation handlers before connect, and requires protocolVersion 1.
+(explicit true), `loadProduct`, `loadApi`, `configDir`, `expectedCwd` and `emit`.
+After entry verification, the injected Product loader must return the **complete**
+verified official outer WorkBuddy Product projection, not a hand-built identity
+stub. The assembly validates the overlay identity and rejects unresolved loader
+control keys before importing the API. It passes the whole projection to
+`createHarness({configDir,productConfig,strictMcpConfig:true,signal})` and creates
+an **external account / managed Product** client. The root library default is
+CodeBuddy and is never an acceptable fallback. Form+URL elicitation capabilities
+and cancel-only handlers are installed before connect. Initialization requires
+protocolVersion 1, absent/empty advertised auth methods, and one bounded
+`client.product.read({})` showing ready/managed WorkBuddy, version 5.9.3.
+A Product mismatch, timeout, or elicitation fails setup and attempts bounded cleanup;
+no command shim is returned.
 Any elicitation during initialization rejects setup without inspecting its input.
 It cannot switch to a managed account or supply provider credentials. The pinned
 client rejects duplicate request handlers: preconnect handler unsubscribe functions
@@ -97,3 +105,24 @@ injected owner. A dishonest fake verifier or injected API is not a trust boundar
 The assembly does not expose a vendor executable/main or a complete production
 runner. Its tests supply only self-authored fake APIs and perform no account or
 model calls.
+
+### Product provenance and remaining admission gates
+
+The Product contract was separately verified with the pinned official 5.9.3
+bundle in cloud diagnostic run 42433908802 (source 25191a7). This assembly's tests
+remain vendor-free and do not repeat that execution. The loader owner must apply
+the physical original-fs path, file identity, size and exact SHA256 checks from
+`workbuddy_library_driver.mjs::loadPhysicalProduct`, after the complete paired
+bundle verification. Preserve all configuration data except the five loader-control
+keys (`include`, `productConfigEnv`, `productConfigPathEnv`, `replacements`,
+`mergeStrategy`), pin productVersion to 5.9.3 and wrap schemaVersion 1 / kind overlay.
+Structural checks here do not prove completeness or authenticity; injected loader
+and verifier are trusted dependencies, not user-configurable security boundaries.
+Do not copy the vendor Product contents into this repository or expose them in
+public diagnostics.
+
+Managed **Product** is not managed **Account**. No account read, login,
+provisioning, credential extraction or model verification is added. A positive
+Product read is not authentication, native-approval integration, model readiness,
+commercial redistribution permission, or production admission. Existing synthetic
+network gates and unknown-liveness/no-retry semantics remain unchanged.

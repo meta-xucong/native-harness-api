@@ -1,6 +1,6 @@
-/** Injectable external-only runtime assembly. No vendor import or command-line entry. */
+/** Injectable external-Account/managed-Product runtime assembly. No vendor import or command-line entry. */
 import { performance } from 'node:perf_hooks';
-import { createCommandShim } from './beta15_command_shim.mjs';
+import { boundedCopy, createCommandShim } from './beta15_command_shim.mjs';
 
 export class RuntimeSetupError extends Error {
   constructor(code) { super(code); this.code = code; }
@@ -8,15 +8,34 @@ export class RuntimeSetupError extends Error {
 class Deadline extends Error {}
 const check = value => { if (!value) throw new RuntimeSetupError('EXTERNAL_RUNTIME_REJECTED'); };
 function budget(value, max) { check(Number.isSafeInteger(value) && value >= 1 && value <= max); }
+const OVERRIDES = ['include', 'productConfigEnv', 'productConfigPathEnv', 'replacements', 'mergeStrategy'];
+function object(value) { return value !== null && typeof value === 'object' && !Array.isArray(value); }
+function productProjection(value) {
+  // Structural checks cannot establish full Product provenance. The injected
+  // loader must verify the same original physical bytes and retain the complete
+  // config, stripping only the official loader's override keys before returning.
+  // Detach the projection so later mutation by a loader cannot alter admission.
+  const projection = JSON.parse(JSON.stringify(boundedCopy(value, 1024 * 1024)));
+  check(object(projection) && projection.schemaVersion === 1 && projection.kind === 'overlay');
+  check(Object.keys(projection).every(key => ['schemaVersion', 'kind', 'configuration'].includes(key)));
+  const config = projection.configuration;
+  check(object(config) && config.productName === 'WorkBuddy' && config.applicationName === 'WorkBuddy' && config.productVersion === '5.9.3');
+  check(object(config.authentication) && config.authentication.id === 'workbuddy-desktop' &&
+    config.authentication.type === 'account-scoped-external-link' &&
+    object(config.authentication.attributes) && config.authentication.attributes.platform === 'workbuddy');
+  for (const key of OVERRIDES) check(!Object.hasOwn(projection, key) && !Object.hasOwn(config, key));
+  return projection; // No identity-only projection: preserve all other config.
+}
 
 /**
  * All paths, original bytes and native execution authority remain the owner's
- * responsibility. verifyEntry must affirm true before loadApi may be invoked.
+ * responsibility. verifyEntry must affirm true before loadProduct/loadApi.
+ * loadProduct must return the full verified physical Product projection.
  * loadApi is injected: importing this module never loads the vendor bundle.
  */
-export async function createExternalRuntime({ verifyEntry, loadApi, configDir, expectedCwd, emit,
+export async function createExternalRuntime({ verifyEntry, loadProduct, loadApi, configDir, expectedCwd, emit,
   timeoutMs = 30000, cleanupMs = 10000, now = () => performance.now() } = {}) {
-  check(typeof verifyEntry === 'function' && typeof loadApi === 'function' && typeof emit === 'function' && typeof now === 'function');
+  check(typeof verifyEntry === 'function' && typeof loadProduct === 'function' && typeof loadApi === 'function' && typeof emit === 'function' && typeof now === 'function');
   check(typeof configDir === 'string' && configDir.length > 0 && configDir.length <= 4096);
   check(typeof expectedCwd === 'string' && expectedCwd.length > 0 && expectedCwd.length <= 4096);
   budget(timeoutMs, 30000); budget(cleanupMs, 10000);
@@ -83,12 +102,14 @@ export async function createExternalRuntime({ verifyEntry, loadApi, configDir, e
   }
   try {
     check(await startStep(verifyEntry) === true);
+    const productConfig = productProjection(await startStep(loadProduct));
+    remaining();
     const api = await startStep(loadApi);
     check(api && typeof api.createHarness === 'function' && typeof api.createClient === 'function');
     // Keep the creation promise reachable for timeout races. A late resource is
     // never published; abort plus one close request is attempted immediately.
     remaining();
-    const creation = Promise.resolve(api.createHarness({ configDir, strictMcpConfig: true, signal: controller.signal }));
+    const creation = Promise.resolve(api.createHarness({ configDir, productConfig, strictMcpConfig: true, signal: controller.signal }));
     creation.then(value => {
       createdHarness = value;
       if (failed && !harness && value && typeof value.close === 'function') {
@@ -100,7 +121,7 @@ export async function createExternalRuntime({ verifyEntry, loadApi, configDir, e
     check(harness && typeof harness.close === 'function' && typeof harness.closed?.then === 'function');
     harness.closed.catch(() => {});
     remaining();
-    client = api.createClient({ account: { mode: 'external' }, product: { mode: 'external' },
+    client = api.createClient({ account: { mode: 'external' }, product: { mode: 'managed' },
       capabilities: { elicitation: { form: {}, url: {} } } });
     check(client && typeof client.on === 'function' && typeof client.connect === 'function' && typeof client.close === 'function');
     const removePermission = client.on('session/request_permission', () => ({ outcome: { outcome: 'cancelled' } }));
@@ -109,6 +130,14 @@ export async function createExternalRuntime({ verifyEntry, loadApi, configDir, e
     check(!elicitationSeen);
     await startStep(() => client.connect(harness, { timeoutMs: remaining() }));
     check(!elicitationSeen && client.initialization?.protocolVersion === 1);
+    const authMethods = client.initialization.authMethods;
+    check(authMethods === undefined || Array.isArray(authMethods) && authMethods.length === 0);
+    check(typeof client.product?.read === 'function');
+    const product = await startStep(() => client.product.read({}));
+    check(!elicitationSeen && object(product) && product.state === 'ready' && product.mode === 'managed' &&
+      product.productName === 'WorkBuddy' && product.applicationName === 'WorkBuddy' && product.productVersion === '5.9.3');
+    const finalMethods = client.initialization?.authMethods;
+    check(client.initialization?.protocolVersion === 1 && (finalMethods === undefined || Array.isArray(finalMethods) && finalMethods.length === 0));
     // Pinned client.on rejects duplicate request handlers and returns removers.
     // Transfer handlers synchronously, with no await or unprotected event turn.
     removePermission(); removeElicitation();
@@ -116,7 +145,8 @@ export async function createExternalRuntime({ verifyEntry, loadApi, configDir, e
     remaining();
     return Object.freeze({
       dispatch: command => shim.dispatch(command),
-      state: () => ({ externalOnly: true, protocolVersion: 1, ...shim.state() }),
+      state: () => ({ externalAccount: true, managedProduct: true, productReady: true,
+        productIdentityVerified: true, authMethodsEmpty: true, protocolVersion: 1, ...shim.state() }),
       close: () => { shim.stop(); return closeRuntime(); }
     });
   } catch (error) {
