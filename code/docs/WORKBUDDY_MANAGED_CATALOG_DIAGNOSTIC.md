@@ -87,3 +87,28 @@ These are authored fixtures, not native results. The new workflow is published
 only after independent review under the explicit empty-cloud-account scope.
 A successful run would establish only genuine managed empty discovery/catalog
 and unauthenticated readback. Real login and user-PC compatibility remain separate.
+
+## Verified hosted result
+
+On 2026-11-08, commit `d06cbdaf8959615d3cb90aa0594e828dcb25826a`,
+[run 42438026833](https://github.com/meta-xucong/native-harness-api/actions/runs/42438026833)
+passed the native experiment in 3,480 ms. Exact entry/full Product and empty roots
+were verified; managed initialization, WorkBuddy Product identity, exact public
+catalog, unauthenticated account read and false auth status all passed. No
+elicitation occurred. Client/Harness closure and Harness settlement passed;
+the process exited zero with a naturally empty owned Job and complete final
+handle/IO cleanup. stdin/stdout/stderr counts were all zero.
+
+This proves the genuine pinned runtime can initialize and expose its managed
+WorkBuddy auth catalog from fresh empty state without a private protection
+bootstrap. It does **not** prove account login, existing GUI restoration,
+credential-storage protection after login, model entitlement or user-PC support.
+Native-account verification and real-model readiness remained false. Expected
+disposable lock/directory/watcher side effects and the non-sandbox caveat remain.
+
+The sanitized artifact was 13600620980; JSON SHA256
+`c2e61477e73f3f2bd34ef739b769cf58f7609f6ca75e2c622bfa7482253e06ff`.
+The job's prerequisites passed 35 authored managed scenarios and 447 Python tests
+with four reported skips on actual Windows. Both ordinary source CI runs also
+passed; only this managed experiment, not the older Product/Client probes, ran
+for this commit. No login, model call, user-PC action, merge or deployment occurred.

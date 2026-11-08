@@ -75,5 +75,24 @@ These commands use only authored fake APIs, not the vendor runtime. The real
 probe is a separately authorized hosted test after independent source review.
 Its workflow watches only this probe's new source and tests. Reused helper
 changes require a new review; they do not automatically rerun this experiment.
-No claim of actual execution or pass is made by this document before evidence is
-collected for the exact published commit.
+## Verified hosted result
+
+On 2026-11-08, commit `ff0b7e9a36886846e913143c56261392942b240a`,
+[run 42437202545](https://github.com/meta-xucong/native-harness-api/actions/runs/42437202545)
+passed all four actual Client/synthetic-peer cases: 19 wire messages, four clients
+and four stream pairs closed, 1,072 ms. The process exited zero with its owned Job
+naturally empty; final handles/IO/cleanup checks passed. All account data was
+synthetic, and native-account/model readiness remained false.
+
+The parent discarded 34 stderr bytes. Their contents were not retained; this is
+compatible with the SDK's expected late-duplicate-response logging, not proof of
+what those bytes said. stdout and stdin were zero. The only artifact was the
+validated sanitized summary (artifact 13599274149; JSON SHA256
+`47bb68751a023a151939e0972acb2bb651b3a87afbac90083efe7c883d240c2d`).
+Independent result review accepted the scoped evidence. Both ordinary source CI
+runs also passed; no Product/managed-provider experiment ran for this commit.
+
+The preceding `629930c` experiment passed three cases but failed the cancellation
+case because our fake used the wrong request option and assumed automatic local
+rejection. It completed owned cleanup. The corrected run above is a new reviewed
+source experiment, not a rerun or proof of native-provider cancellation behavior.
