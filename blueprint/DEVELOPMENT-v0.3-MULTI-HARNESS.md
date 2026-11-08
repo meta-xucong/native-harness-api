@@ -1,5 +1,7 @@
 # v0.3 通用 Harness 开发文档（D1 / D2）
 
+> 当前增量：见 [已有官方 CLI 优先接入设计](EXISTING-CLI-ADDENDUM.md)。Codex 默认改为同用户、同 CODEX_HOME 的现有官方 CLI；本文独立 managed profile 仅保留兼容语义。历史基线及测试不追改。
+
 状态：开发定稿；独立审计见 [DEVELOPMENT-AUDIT-v0.3.md](DEVELOPMENT-AUDIT-v0.3.md)，允许按本文实施，不代表运行验证。基线 Native `694e2bd`（代码 `081e102`），Bridge `03fd9020`，Sub2API `9ffe3aa2`。本文件把 v0.3 的概念收敛为实际改动，不将每个名词变成组件。
 
 ## 1. 本次交付与不做事项

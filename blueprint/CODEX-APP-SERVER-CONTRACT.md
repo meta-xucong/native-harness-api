@@ -1,5 +1,7 @@
 # Codex App Server 固定协议证据（开发合同定稿）
 
+> 当前增量：见 [已有官方 CLI 优先接入设计](EXISTING-CLI-ADDENDUM.md)。Codex 默认改为同用户、同 CODEX_HOME 的现有官方 CLI；本文独立 managed profile 仅保留兼容语义。历史基线及测试不追改。
+
 状态：开发定稿；独立审计见 [DEVELOPMENT-AUDIT-v0.3.md](DEVELOPMENT-AUDIT-v0.3.md)，允许按本文实施，不代表运行验证。
 
 核验日期：2026-11-08。范围：官方公开发行元数据、下载归档哈希与固定版本静态源码/schema。**未执行厂商二进制、未登录、未推理、未做 Windows 真机验证。** 本文件不能代替真实接入验收。

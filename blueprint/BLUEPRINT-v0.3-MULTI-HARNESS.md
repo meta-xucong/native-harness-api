@@ -1,5 +1,7 @@
 # 通用本地 Harness 渠道蓝图 v0.3
 
+> 当前增量：见 [已有官方 CLI 优先接入设计](EXISTING-CLI-ADDENDUM.md)。Codex 默认改为同用户、同 CODEX_HOME 的现有官方 CLI；本文独立 managed profile 仅保留兼容语义。历史基线及测试不追改。
+
 日期：2026-11-08 UTC。状态：**设计稿；独立审计结论见 [DESIGN-AUDIT-v0.3.md](DESIGN-AUDIT-v0.3.md)；不是新适配器发布或生产许可。**
 
 本轮仅修改 `blueprint/`。用户要求先调整通用多 Harness 蓝图，再审计；不以本稿授权新的登录、推理、安装、部署或运行第三方程序。原实现与下载包保持不变。

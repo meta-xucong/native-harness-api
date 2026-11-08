@@ -1,5 +1,7 @@
 # 多 Harness 来源与能力证据矩阵
 
+> 当前增量：见 [已有官方 CLI 优先接入设计](EXISTING-CLI-ADDENDUM.md)。Codex 默认改为同用户、同 CODEX_HOME 的现有官方 CLI；本文独立 managed profile 仅保留兼容语义。历史基线及测试不追改。
+
 日期：2026-11-08 UTC。v0.3 设计附录；非运行报告。
 
 ## 当前基线
@@ -43,3 +45,18 @@
 ## 每项未来真实证明必须携带
 
 官方来源/许可证及条款范围、产品/地区、固定原生资产版本及哈希、Adapter revision、OS、测试类型、认证路径、模型binding和回读证据、正反例结果、清理/恢复记录、未覆盖项及测试日期。原始账号信息/凭据/工作区内容不进入仓库，脱敏引用不能代替真实证据。已过时或升级后的证据不得自动沿用。
+
+## 2026-11-08 已有 CLI 增量核查
+
+当前代码基线为 `d324b468`，上表“Codex未实现”是 `081e102` 阶段历史，**不再描述当前代码**：managed Codex App Server 的源码/fixture 已有；本次新增的是复用用户已有官方 CLI/CODEX_HOME 的体验，按 [增量设计](EXISTING-CLI-ADDENDUM.md) 与独立审计实施。
+
+| 产品 | 本轮公开证据检查 | 本轮决定 |
+|---|---|---|
+| Codex | [认证](https://learn.chatgpt.com/docs/auth)、[App Server](https://learn.chatgpt.com/docs/app-server) 本轮可读；官方CLI固定源码的 npm 平台入口已核对 | 同用户/同CODEX_HOME可由官方程序使用既有登录；本工具不读凭据。商业/托管服务认证限制明确，不能宣称404token商业转供获准 |
+| WorkBuddy | 沿用前轮已固定 public SFE beta16 与 d324b468 实现证据；本轮未重新登录/执行 | 同账号独立官方登录，不承诺GUI会话复用；不改其Adapter |
+| 豆包工作 | 历史 `@bytedance/doubao-cli@2.31.3`/internal integration package 证据保留；本轮npm网页403、registry网页工具不可访问，未重新下载或运行 | 仍为入口候选，未新增可用模型或长期接口支持声明 |
+| 千问办公 | [jsBridge](https://docs.qwenwork.cn/developer/misc/embedded-app-jsbridge)、[Hooks](https://docs.qwenwork.cn/desktop/hooks) 本轮可读。jsBridge面向企业嵌入网页；Stop可阻止结束，不能独自证明终态 | 未证实本项目所需完整模型执行合同，保持候选，不虚构Adapter |
+| Qwen Code | [headless/stream-json](https://qwenlm.github.io/qwen-code-docs/en/users/features/headless/) 本轮可读，支持逐事件输出文档 | 独立产品候选，不等于千问办公；没有本项目Adapter |
+| CodeBuddy Code | 历史官方ACP/SDK证据保留，本轮ACP网页读取502 | 独立产品候选，不代替WorkBuddy；没有本项目Adapter |
+
+上述只读公开资料检查不启动用户软件、登录或调用模型。网页读取失败不等于产品没有接口，也不补造支持结论。
