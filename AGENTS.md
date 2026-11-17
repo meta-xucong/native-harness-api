@@ -1,5 +1,7 @@
 # 开发代理与协作者约束
 
+当前普通 Provider 增量先读 `blueprint/NATIVE-OPENAI-PROVIDER-BLUEPRINT.md`、`NATIVE-OPENAI-PROVIDER-DEVELOPMENT.md` 及两份独审。只改 Native 入口/配置/测试，不改 Bridge、Node、Adapter 或原生 Sub2API。新 `ingress:openai` 从 provider key 绑定固定资源域，不具备可信下游用户身份；这是对下文旧 Sub2 认证归属要求的显式入口例外，不放开多租户。无透传幂等时每 HTTP 为新operation，不能用prompt hash或409声称端到端只执行一次。保留旧入口/旧任务恢复，unknown usage不造token，只允许非收费试验。
+
 当前增量先读 `blueprint/EXISTING-CLI-ADDENDUM.md` 及其独立审计。Codex 默认改为已有官方 CLI / 同用户同 CODEX_HOME；本工具不读取复制凭据，旧 managed adapter 与 WorkBuddy 已接受任务恢复必须保留。仅 Native 最小适配，Bridge/Sub2API 不改；不运行真实账号/模型，不部署/合并，不声称商业转供获准。
 
 本分支当前为 P1b 接缝开发，真实 Bridge HTTP 可测试，Sub2API PostgreSQL 完整闭环未验收，模型执行仍仅 synthetic。先读 README、blueprint/BLUEPRINT-v0.2.md、blueprint/P1B-ADDENDUM.md、blueprint/DESIGN-AUDIT-v0.2.md、code/README.md、code/docs/HTTP_CONTRACT.md 和 code/docs/IMPLEMENTATION_STATUS.md。docs/ 与 audit/ 是 v0.1 历史快照，不覆盖审定 v0.2。代码与蓝图必须分放 code/、blueprint/。

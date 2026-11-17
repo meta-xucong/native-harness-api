@@ -133,6 +133,7 @@ class MixedPackageSourceTests(unittest.TestCase):
                     for module in ('codex_trial_runtime.py', 'public_sfe_adapter.py'):
                         self.assertIn('src/native_harness_api/' + module, files)
                     self.assertFalse(any(name.startswith('assets/') for name in files))
+                    self.assertEqual(files['OPENAI_PROVIDER.md'].name, 'OPENAI_PROVIDER.md')
                     for name in ('LICENSE', 'NOTICE'):
                         destination = 'licenses/codex/' + name
                         if harness == 'codex':

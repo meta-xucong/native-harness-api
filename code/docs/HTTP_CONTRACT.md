@@ -1,3 +1,5 @@
+> 新普通 OpenAI provider 入口见 [OPENAI_PROVIDER.md](OPENAI_PROVIDER.md)；下文专用 Sub2API 配置/接缝是旧模式，不是新入口的前置条件。当前增量证据见 [测试记录](OPENAI_PROVIDER_TESTS.md)。
+
 > 后续真实增量扩展以 [native-events-v1](NATIVE_EVENT_STREAM.md) 为准；下文非流式为历史基线。
 
 # P1b 实施补充（P1a 合同基线保留在下文）
@@ -103,6 +105,8 @@ P1b 若采用不同兼容路径，需同时改客户端/合同/测试，不能�
 `outcome` 与 `liveness` 分离。Node 观察异常保留 pending/unknown，业务终态不可变。成功或失败且活性 unknown 都继续占槽。返回最终回答不等于安全释放本地执行能力。
 
 Node 在上报结果后检查返回回执的 schema/task/claim/grant/result 全部一致，才持久确认 ACK。ACK 丢失只重传结果。
+
+WorkBuddy 本地试验支持在原 `harness-result` 上提交发送前终止类型 `PRE_PROMPT_ABORTED`。该类型固定为 `failed/stopped_confirmed`、空 `output_blocks`、`usage.state="unknown"`。其 `pre_prompt_abort` 证明字段为 `prompt_intent_issued=false`、`owned_cleanup_confirmed=true`，以及相同的两个布尔字段 `session_new_intent_issued`、`session_close_acknowledged`。普通原生完成继续使用原 schema。Bridge 在同一事务内验证原消费者、claim、grant 及该任务无原生活动事件。HTTP 失败投影为既有 `NATIVE_FAILED`，事件流仅投影失败终态。要接收此回执需相应的 Bridge 和 Node 实现。旧 Bridge 拒绝此类型时 Node 保留待上传回执。
 
 当前 Node 不提供围栏恢复/强制释放，未决 intent 和未知活性持续隔离。测试假账本接受观察更新只是夹具行为，**不能当生产停机证明协议**。真实停止必须同时证明原生执行已停止和旧许可消费者不能迟到 spawn。
 

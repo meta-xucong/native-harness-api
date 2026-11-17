@@ -1,7 +1,7 @@
 """Self-authored objects only. No SDK import or execution."""
 import json
 import unittest
-from native_harness_api.beta15_session import SessionCoordinator, decode_frame
+from native_harness_api.beta15_session import FrameDecodeError, SessionCoordinator, decode_frame
 from native_harness_api.beta15_reducer import ContractError
 from test_beta15_reducer import catalog, chunk, terminal, ack
 
@@ -226,6 +226,17 @@ class FrameTests(unittest.TestCase):
                     b'{"x":NaN}', b'{"x":Infinity}', b'{} {}', b'\xff', b'{}\x00',
                     b'{"x":"\\ud800"}', b'']:
             with self.subTest(raw=raw), self.assertRaises(ContractError): decode_frame(raw)
+    def test_decode_stage_without_exposing_input(self):
+        for raw, kind in ((b'PRIVATE\xff', 'invalid_utf8'), (b'PRIVATE', 'invalid_json'),
+                          (b'', 'invalid_json'), (b'{"x":NaN}', 'invalid_json'),
+                          (b'["PRIVATE"]', 'invalid_frame_structure'),
+                          (b'{"x":1,"x":"PRIVATE"}', 'invalid_frame_structure'),
+                          (b'{"x":"\\ud800"}', 'invalid_frame_structure')):
+            with self.subTest(kind=kind):
+                with self.assertRaises(FrameDecodeError) as error:
+                    decode_frame(raw)
+                self.assertEqual(error.exception.kind, kind)
+                self.assertEqual(str(error.exception), 'BETA15_CONTRACT_REJECTED')
     def test_size_and_type(self):
         for raw in ['{}', bytearray(b'{}'), None]:
             with self.assertRaises(ContractError): decode_frame(raw)

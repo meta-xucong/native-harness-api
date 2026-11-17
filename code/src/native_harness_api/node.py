@@ -15,8 +15,9 @@ import os
 from pathlib import Path
 import sqlite3
 
-from .contracts import (Binding, Identity, NodeOffer, MAX_RESULT_BYTES, canonical,
-                        checked_task, digest, identifier, normalize_request)
+from .contracts import (Binding, Identity, NodeOffer, MAX_RESULT_BYTES, PRE_PROMPT_ABORTED,
+                        canonical, checked_task, digest, identifier, normalize_request,
+                        pre_prompt_abort_result)
 from .errors import ChannelError
 
 
@@ -243,6 +244,17 @@ class Runner:
                 raise ValueError('Invalid pending liveness')
             return {'outcome': 'pending', 'liveness': value['liveness'],
                     'code': 'APPROVAL_PENDING' if value['liveness'] == 'waiting_approval' else 'EXECUTION_UNCERTAIN'}
+        if value.get('code') == PRE_PROMPT_ABORTED:
+            proof = value.get('pre_prompt_abort')
+            if (not task['request']['binding']['model_alias'].startswith('workbuddy-')
+                    or type(proof) is not dict or proof.get('prompt_intent_issued') is not False
+                    or proof.get('owned_cleanup_confirmed') is not True):
+                raise ValueError('Invalid WorkBuddy pre-prompt abort evidence')
+            opened = proof.get('session_new_intent_issued')
+            result = pre_prompt_abort_result(opened)
+            if proof.get('session_close_acknowledged') is not opened or value != result:
+                raise ValueError('Invalid WorkBuddy pre-prompt abort result')
+            return result
         if value.get('outcome') not in {'succeeded', 'failed', 'cancelled'}:
             raise ValueError('Invalid native outcome')
         if value.get('liveness') not in {'unknown', 'stopped_confirmed'}:

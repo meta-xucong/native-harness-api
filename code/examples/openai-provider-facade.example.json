@@ -1,0 +1,23 @@
+{
+  "mode": "harness_local_trial",
+  "schema_version": 2,
+  "adapter": "facade_only",
+  "ingress": "openai",
+  "source": "source-example",
+  "ledger_instance": "ledger-example",
+  "bridge_url": "https://bridge.example.com",
+  "owner": ["provider", "source-example"],
+  "bindings": [
+    {
+      "binding_id": "copy-exact-generated-binding-id",
+      "revision": 1,
+      "model_alias": "workbuddy-local",
+      "native_model": "copy-exact-verified-native-model"
+    }
+  ],
+  "source_token_env": "NATIVE_BRIDGE_SOURCE_TOKEN",
+  "facade_token_env": "NATIVE_FACADE_TOKEN",
+  "accepting_new": false,
+  "port": 8790,
+  "wait_seconds": 180
+}

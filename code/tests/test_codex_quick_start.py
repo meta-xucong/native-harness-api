@@ -154,7 +154,7 @@ class CodexWizardTests(unittest.TestCase):
                 public_alias=public_alias, **context)
             return dict(recipe=recipe, binding=asdict(binding_for(recipe)), assets_root=str(Path(context['cli_path']).parent))
         self.cli.export_target.side_effect = export
-        with patch('builtins.input', side_effect=['', '', 'yes', 'yes', '', '', 'https://bridge.example.com', '7', '9', '/var/lib/native-bridge']), patch.object(q, 'start_node') as start:
+        with patch('builtins.input', side_effect=['', '', 'yes', 'yes', '', '', 'https://bridge.example.com', '/var/lib/native-bridge']), patch.object(q, 'start_node') as start:
             self.assertEqual(q.setup_codex(self.root), 0)
         start.assert_not_called()
         path = self.root / 'connection' / 'windows-node.json'

@@ -41,6 +41,8 @@ Client.cmd models --profile C:\Profiles\实际profile --target-model 实际模�
 
 它再次创建并关闭一个空目录会话，不发送 prompt。只有本次官方目录包含该模型、身份核验和清理均通过后，才输出单个 target JSON。将其完整放入 spec 的 `targets` 数组，不修改其中 recipe、Binding 或指纹。此操作只输出本机配置，不保存部署、不启动 Node，也不证明该模型已完成真实推理。
 
+WorkBuddy Node 包可在 `models` 命令中加 `--named-pipe`，用固定版腾讯 Client 通过 Windows Named Pipe 查询并导出 `workbuddy.public-node.pipe.v1`。它生成独立的 binding，沿用同一个已确认 profile。已有 stdio target 和已受理任务继续使用原配方；迁移新准入时沿用原部署身份、data_dir 与 journal。`start --config` 继续只做既有恢复，显式 `node --config` 才能按原准入规则领取新任务。
+
 
 ## 一台电脑混合接入两个 Harness
 

@@ -17,6 +17,7 @@ class PublicSfeOwnedSession:
     MAX_FRAME = 262144
     MAX_OUTPUT = 4 * 1024 * 1024
     MAX_STDERR = 65536
+    REPORT_INTERRUPTION = False
 
     def __init__(self, transport):
         self.transport = transport
@@ -237,6 +238,10 @@ class PublicSfeOwnedSession:
                 if not self.protocol.tick() or not self._send(intent(), deadline) or not self._pump_until(ready, deadline, cancellation=cancellation):
                     self._fail('TURN_NOT_COMPLETED')
                     break
+        except KeyboardInterrupt:
+            if not self.REPORT_INTERRUPTION:
+                raise
+            self._fail('CANCEL_REQUESTED')
         except Exception:
             self._fail('EXECUTION_UNCONFIRMED')
         finally:

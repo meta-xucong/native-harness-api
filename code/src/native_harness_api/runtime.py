@@ -146,16 +146,26 @@ def main(argv=None):
     parser.add_argument("role", choices=("facade", "node"))
     parser.add_argument("--config", required=True, type=Path)
     parser.add_argument("--once", action="store_true", help="One node heartbeat/recovery/poll cycle")
+    parser.add_argument("--recover-only", action="store_true", help="One journal recovery pass, without polling for new work")
     args = parser.parse_args(argv)
     try:
         config = RuntimeConfig.load(args.config)
         if args.role == "facade":
-            if args.once:
-                raise ValueError("--once is only supported for node")
+            if args.once or args.recover_only:
+                raise ValueError("Node-only options")
             with make_server(config.facade(), port=config.port) as server:
                 server.serve_forever()
         else:
+            if args.recover_only:
+                journal = config.data_dir / 'journal'
+                if not all((journal / name).is_file() for name in ('journal-created', 'node.sqlite')):
+                    print('No existing journal at the configured location.', file=sys.stderr)
+                    return 1
             runner = config.runner()
+            if args.recover_only:
+                status = runner.run_once(allow_new=False)
+                print(canonical({k: status[k] for k in ("outcome", "liveness", "code") if k in status}))
+                return 0
             while True:
                 status = node_tick(runner)
                 if args.once:

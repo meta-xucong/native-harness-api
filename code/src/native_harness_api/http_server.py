@@ -1,7 +1,15 @@
 """Bounded loopback-only HTTP adapter for P1a. Not a production web server."""
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from dataclasses import dataclass
+import time
 from .contracts import MAX_REQUEST_BYTES, canonical, parse_json
 from .errors import ChannelError
+
+
+@dataclass
+class EventStream:
+    frames: object
+    deadline: float
 
 
 def single_header(headers, name, *, required=True):
@@ -61,6 +69,30 @@ def make_server(application, host="127.0.0.1", port=0):
                 status, body, headers = 408, ChannelError("REQUEST_TIMEOUT", 408).body(), {}
             except Exception:
                 status, body, headers = 500, ChannelError("INTERNAL_ERROR", 500).body(), {}
+            if isinstance(body, EventStream):
+                frames = iter(body.frames)
+                try:
+                    self.send_response(status)
+                    self.send_header("Content-Type", "text/event-stream")
+                    self.send_header("Cache-Control", "no-store")
+                    self.send_header("X-Accel-Buffering", "no")
+                    self.send_header("Connection", "close")
+                    for key, value in headers.items():
+                        self.send_header(key, value)
+                    self.end_headers()
+                    for frame in frames:
+                        remaining = body.deadline - time.monotonic()
+                        if remaining <= 0:
+                            break
+                        self.connection.settimeout(min(5, remaining))
+                        self.wfile.write(frame)
+                        self.wfile.flush()
+                except OSError:
+                    pass  # Only the observer departed, never cancel/re-submit.
+                finally:
+                    frames.close()
+                    self.close_connection = True
+                return
             encoded = canonical(body).encode()
             try:
                 self.send_response(status)

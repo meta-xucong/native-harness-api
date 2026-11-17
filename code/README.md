@@ -1,3 +1,5 @@
+> 普通 OpenAI-compatible 上游接入从 [OPENAI_PROVIDER.md](docs/OPENAI_PROVIDER.md) 开始。无需修改原生 Sub2API；旧 native 配置/恢复继续保留。
+
 # Native Harness P1b 接缝代码
 
 最新续作以 [真实使用完成门槛](../blueprint/P2-COMPLETION-GATES.md) 为准。现有 probe 只是一项实验工具，不是用户要求的完整产品；[差距清单](docs/REAL_READINESS_GAPS.md) 未关闭前状态始终为 `NOT_READY_FOR_DIRECT_REAL_USE`。

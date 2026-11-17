@@ -10,11 +10,10 @@ SDK 1.7.0 schema/v2/schema.unstable.json SHA256
 The public package pins SDK 1.7.0; the inspected schema is the same-version
 physical schema in the pinned official desktop archive, not an executed validator.
 
-UsageUpdate/Cost and the beta16 credits extension allow session-level usage
-without requestId. Such updates must not be assigned to a turn or treated as
-completion. This narrow projection drops only validated usage updates. Every
-other event is copied unchanged for the existing coordinator/reducer, which MUST
-still validate session/run correlation, model evidence and terminal semantics.
+Usage and available-command updates are session-scoped and can omit requestId.
+Neither contributes text or a terminal result. This projection drops those
+two variants. Other events reach the existing coordinator/reducer unchanged
+for session/run correlation, model evidence and terminal semantics.
 No requestId is fabricated. Unknown usage remains unknown. Other beta16 events
 may still be unsupported: this is not a general beta16 compatibility claim.
 """
@@ -120,7 +119,7 @@ class Beta16EventProjector:
         return re.fullmatch(r'[A-Z]{3}', currency) is not None
 
     def project(self, envelope):
-        """Return an immutable-by-copy event, or None only for valid usage."""
+        """Return a copied event, or None for a supported session-only variant."""
         if self.fault is not None:
             raise ProjectionError(self.fault)
         self.events_received += 1
@@ -141,6 +140,13 @@ class Beta16EventProjector:
                 if not self._usage(event, update):
                     self._fail('BETA16_EVENT_INVALID')
                 self.usage_dropped += 1
+                return None
+            if update['sessionUpdate'] == 'available_commands_update':
+                # The text endpoint has no command menu. The catalog still
+                # consumes the same frame/count/byte budgets as turn updates.
+                if (type(update.get('availableCommands')) is not list
+                        or not self._meta(update) or not self._meta(event)):
+                    self._fail('BETA16_EVENT_INVALID')
                 return None
             return event
         except ProjectionError:

@@ -1,6 +1,14 @@
 # Native Harness API
 
-## 当前开发线：通用多 Harness v0.3
+## 当前增量：原生 Sub2API 普通 Provider
+
+Native 新增普通 OpenAI-compatible 入口：Base URL + API Key，使用原生 Sub2API 已有 Force Chat Completions 模式，不改其源码。保留原 Bridge/Node 和 WorkBuddy/Codex。新连接默认生成普通配置，已有连接原样恢复。
+
+- [接入说明与明确限制](code/docs/OPENAI_PROVIDER.md)、[蓝图](blueprint/NATIVE-OPENAI-PROVIDER-BLUEPRINT.md)、[开发文档](blueprint/NATIVE-OPENAI-PROVIDER-DEVELOPMENT.md)。
+- 单可信资源域、单 user 文本、JSON/标准 SSE、未知用量不造 token。原生 Sub2API 不透传幂等键，网关重试可能产生新执行；不声称端到端 exactly-once、准确收费或商业获准。
+- [本次验证状态](code/docs/OPENAI_PROVIDER_TESTS.md)。真实账号/模型、生产部署与商业许可仍未验收。
+
+## 既有开发线：通用多 Harness v0.3
 
 目标是把用户本机官方 Harness 的真实执行与文本输出接入 404token / Sub2API。蓝图与实现分别保存在 `blueprint/`、`code/`；当前仍在 draft PR 开发审计，不自动部署服务器，也不替用户登录。
 

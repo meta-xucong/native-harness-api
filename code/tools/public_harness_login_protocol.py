@@ -14,6 +14,7 @@ from public_harness_catalog_protocol import CatalogProtocol, _bounded, _constant
 MAX_BYTES = 65536
 MAX_FRAMES = 64
 MAX_ELICITATIONS = 4
+MAX_RECONCILIATION_READS = 15
 
 
 def _text(value):
@@ -50,7 +51,29 @@ def _status(value):
 
 
 def _id(value):
-    return type(value) is int and 0 <= value <= 2147483647
+    # JSON-RPC permits string IDs. Keep bounded IDs in memory only so replies
+    # can correlate; they never enter summaries, prompts or logs.
+    if type(value) is int:
+        return 0 <= value <= 2147483647
+    if type(value) is not str or len(value) > 256 or not all(c.isprintable() for c in value):
+        return False
+    reply = json.dumps({'jsonrpc': '2.0', 'id': value, 'result': {'action': 'cancel'}},
+                       separators=(',', ':'), ensure_ascii=True).encode() + b'\n'
+    return len(reply) <= 2048
+
+
+def _notification_detail(method):
+    """Return a static diagnostic category without retaining the method name."""
+    if type(method) is str:
+        for prefix, detail in (
+                ('auth/', 'notification_auth'),
+                ('account/', 'notification_account'),
+                ('product/', 'notification_product'),
+                ('session/', 'notification_session'),
+                ('elicitation/', 'notification_elicitation')):
+            if method.startswith(prefix):
+                return detail
+    return 'notification_method'
 
 
 class LoginProtocol:
@@ -62,14 +85,18 @@ class LoginProtocol:
         self.login_sent = False
         self.account_authenticated = False
         self.pending_elicitation = None
+        self.pending_elicitation_id = None
         self._identity_event = None
         self.elicitation_ids = set()
         self.reverse_ids = set()
+        self._account_changed_during_read = False
         self._s = dict(schema_version=1, state='new', failure_code='none', frames_received=0,
-                       frames_sent=0, baseline_verified=False, login_intent_confirmed=False,
-                       login_sent=False, login_ack=False, login_settled=False, cancellation_sent=False,
+                       failure_detail='none', frames_sent=0, baseline_verified=False, login_intent_confirmed=False,
+                       login_sent=False, login_ack=False, login_error_code=None, login_settled=False, cancellation_sent=False,
                        timeout_seen=False, account_read_verified=False, auth_status_verified=False,
                        identity_confirmed=False, account_updated_seen=False, elicitation_count=0,
+                       handoff_reply_sent=False, peer_handoff_cancelled=False, handoff_completed=False,
+                       reconciliation_reads=0,
                        native_account_verified=False, real_model_ready=False)
 
     @property
@@ -86,11 +113,17 @@ class LoginProtocol:
     def summary(self):
         return {**self._s, 'state': self.state, 'next_action': self.next_action}
 
-    def _stop(self, code):
+    def _stop(self, code, detail=None):
         self.state = 'unknown' if self.login_sent else 'failed'
         self._s['failure_code'] = code
+        if detail in ('request_shape', 'request_id', 'duplicate_request_id', 'request_method', 'request_phase',
+                      'notification_shape', 'product_update', 'account_update', 'elicitation_complete',
+                      'notification_method', 'notification_auth', 'notification_account',
+                      'notification_product', 'notification_session', 'notification_elicitation'):
+            self._s['failure_detail'] = detail
         self._s['native_account_verified'] = False
         self.pending_elicitation = None
+        self.pending_elicitation_id = None
         self._identity_event = None
         return (), ()
 
@@ -108,7 +141,7 @@ class LoginProtocol:
         self.state = 'baseline'; self.expected = 1
         params = {'protocolVersion': 1, 'clientInfo': {'name': 'native-harness-local-login', 'version': '1'},
                   'capabilities': {'agent': {'elicitation': {'form': {}, 'url': {}}},
-                                   'config': {'warning': {}}, 'account': {'mode': 'managed'}, 'product': {'mode': 'managed'}}}
+                                   'account': {'mode': 'managed'}, 'product': {'mode': 'managed'}}}
         return (self._wire({'jsonrpc': '2.0', 'id': 1, 'method': 'initialize', 'params': params}),), ()
 
     def intent(self, confirmed=False):
@@ -129,6 +162,7 @@ class LoginProtocol:
         if self.pending_elicitation is not None:
             wires.append(self._wire({'jsonrpc': '2.0', 'id': self.pending_elicitation, 'result': {'action': 'cancel'}}))
             self.pending_elicitation = None
+            self.pending_elicitation_id = None
         if self.expected == 5 and not self._s['cancellation_sent']:
             self._s['cancellation_sent'] = True
             wires.append(self._wire({'jsonrpc': '2.0', 'method': '$/cancel_request', 'params': {'requestId': 5}}))
@@ -143,7 +177,17 @@ class LoginProtocol:
         if accepted is not True:
             return self.cancel()
         number = self.pending_elicitation; self.pending_elicitation = None
+        self.pending_elicitation_id = None
+        self._s['handoff_reply_sent'] = True
         return (self._wire({'jsonrpc': '2.0', 'id': number, 'result': {'action': 'accept'}}),), ()
+
+    def _finish_handoff(self):
+        """Peer ended its URL UI; this is neither user cancellation nor auth proof."""
+        if self.pending_elicitation is None:
+            return (), ()
+        number = self.pending_elicitation
+        self.pending_elicitation = self.pending_elicitation_id = None
+        return (self._wire({'jsonrpc': '2.0', 'id': number, 'result': {'action': 'cancel'}}),), ()
 
     def confirm_identity(self, confirmed=False):
         """Explicit separate user decision on the private account_identity UI event."""
@@ -153,6 +197,21 @@ class LoginProtocol:
         self._s['native_account_verified'] = confirmed is True
         self.state = 'verified' if confirmed is True else 'identity_rejected'
         return (), ()
+
+    def reconcile(self):
+        """Observe the SAME login after an RPC error; never resend auth/login."""
+        if self.state != 'reconciliation_wait' or self.expected is not None:
+            return self._stop('invalid_state')
+        if self._s['reconciliation_reads'] >= MAX_RECONCILIATION_READS:
+            return self.reconciliation_expired()
+        self._s['reconciliation_reads'] += 1
+        self._account_changed_during_read = False
+        self._identity_event = None
+        self.state = 'reconciling'
+        return (self._request(6, 'account/read'),), ()
+
+    def reconciliation_expired(self):
+        return self._stop('login_reconciliation_unknown')
 
     def closed(self):
         if not self.done:
@@ -184,6 +243,7 @@ class LoginProtocol:
                     raise ValueError()
                 if number != 5:
                     return self._stop('rpc_error')
+                self._s['login_error_code'] = error['code']
                 # A settled login cannot leave a live UI handoff. Deny any
                 # outstanding peer request before explicit account reconciliation.
                 wires = []
@@ -191,11 +251,13 @@ class LoginProtocol:
                     wires.append(self._wire({'jsonrpc': '2.0', 'id': self.pending_elicitation,
                                              'result': {'action': 'cancel'}}))
                     self.pending_elicitation = None
+                    self.pending_elicitation_id = None
                 # Keep known URL IDs only to recognize a late complete notice;
                 # they cannot create a handoff or authorize another login.
                 self._s['login_settled'] = True
-                self.state = 'reconciling'
-                return (*wires, self._request(6, 'account/read')), ()
+                self.state = 'reconciliation_wait'
+                reads, events = self.reconcile()
+                return (*wires, *reads), events
             return self._result(number, value['result'])
         except (ContractError, ValueError, UnicodeError, RecursionError, OverflowError, TypeError, KeyError):
             return self._stop('malformed_or_unpaired')
@@ -222,7 +284,23 @@ class LoginProtocol:
                     self._identity_event = {'kind': 'account_identity', 'digest': account_identity_digest(account), 'account': {k: account[k] for k in ('id', 'displayName', 'organization') if k in account}}
             return (self._request(4 if number == 3 else 7, 'auth/status'),), events
         if number in (4, 7):
-            if not _status(result) or result['authenticated'] != self.account_authenticated:
+            if not _status(result):
+                return self._stop('status_mismatch')
+            if number == 7:
+                self._s['auth_status_verified'] = True
+            if number == 7 and self._s['login_error_code'] is not None:
+                # beta16 can continue a committed login in the background after
+                # returning an RPC error. An update between the two reads also
+                # requires another consistent pair, never stale identity approval.
+                if (self._account_changed_during_read
+                        or result['authenticated'] != self.account_authenticated
+                        or not self.account_authenticated):
+                    self._identity_event = None
+                    if self.cancelled:
+                        return self._stop('login_reconciliation_unknown')
+                    self.state = 'reconciliation_wait'
+                    return (), ()
+            elif result['authenticated'] != self.account_authenticated:
                 return self._stop('status_mismatch')
             if number == 4:
                 self._s['baseline_verified'] = not self.account_authenticated
@@ -249,29 +327,58 @@ class LoginProtocol:
     def _incoming(self, value):
         if 'id' not in value:
             if not _keys(value, ('jsonrpc', 'method', 'params')):
-                return self._stop('unexpected_notification')
+                return self._stop('unexpected_notification', 'notification_shape')
+            if type(value['method']) is str and value['method'].startswith('$/'):
+                # beta16 aborts the pending URL request when its independent
+                # browser login finishes. Dismiss only that correlated UI.
+                params = value['params']
+                if (value['method'] == '$/cancel_request' and type(params) is dict
+                        and self.pending_elicitation is not None
+                        and type(params.get('requestId')) is type(self.pending_elicitation)
+                        and params.get('requestId') == self.pending_elicitation):
+                    self._s['peer_handoff_cancelled'] = True
+                    return self._finish_handoff()
+                # Other control notifications do not prove auth or cancel login.
+                return (), ()
             params = value['params']
             if value['method'] == 'product/updated':
                 if not _product(params) or type(params['generation']) is not int or params['generation'] < 1:
-                    return self._stop('product_changed')
+                    return self._stop('product_changed', 'product_update')
                 return (), ()
-            if value['method'] == 'account/updated' and _account(params):
+            if value['method'] == 'account/updated':
+                if not _account(params):
+                    return self._stop('unexpected_notification', 'account_update')
                 self._s['account_updated_seen'] = True
                 if not self.login_sent and params['state'] == 'authenticated':
                     self.state = 'existing_account'
                 # Updates never grant readiness or replace explicit read/status.
                 if self.state == 'awaiting_identity' or self.expected == 7:
+                    if self.expected == 7 and self._s['login_error_code'] is not None:
+                        self._account_changed_during_read = True
+                        return (), ()
                     return self._stop('identity_changed')
                 return (), ()
-            if value['method'] == 'elicitation/complete' and _keys(params, ('elicitationId',), ('_meta',)) and _meta(params) and params['elicitationId'] in self.elicitation_ids:
-                self.elicitation_ids.remove(params['elicitationId'])
-                return (), ()
-            return self._stop('unexpected_notification')
-        if not _keys(value, ('jsonrpc', 'id', 'method', 'params')) or not _id(value['id']) or value['id'] in self.reverse_ids:
-            return self._stop('unexpected_request')
+            if value['method'] == 'elicitation/complete':
+                if (_keys(params, ('elicitationId',), ('_meta',)) and _meta(params)
+                        and params['elicitationId'] in self.elicitation_ids):
+                    self.elicitation_ids.remove(params['elicitationId'])
+                    self._s['handoff_completed'] = True
+                    if params['elicitationId'] == self.pending_elicitation_id:
+                        return self._finish_handoff()
+                    return (), ()
+                return self._stop('unexpected_notification', 'elicitation_complete')
+            return self._stop('unexpected_notification', _notification_detail(value['method']))
+        if not _keys(value, ('jsonrpc', 'id', 'method', 'params')):
+            return self._stop('unexpected_request', 'request_shape')
+        if not _id(value['id']):
+            return self._stop('unexpected_request', 'request_id')
+        if value['id'] in self.reverse_ids:
+            return self._stop('unexpected_request', 'duplicate_request_id')
         self.reverse_ids.add(value['id'])
-        if value['method'] != 'elicitation/create' or self.expected != 5 or self.pending_elicitation is not None:
-            return self._stop('unexpected_request')
+        if value['method'] != 'elicitation/create':
+            return self._stop('unexpected_request', 'request_method')
+        if self.expected != 5 or self.pending_elicitation is not None:
+            return self._stop('unexpected_request', 'request_phase')
         p = value['params']
         if not (_keys(p, ('mode', 'message', 'requestId', 'elicitationId', 'url'), ('_meta',)) if type(p) is dict and p.get('mode') == 'url' else _keys(p, ('mode', 'message', 'requestId', 'requestedSchema'), ('_meta',))):
             return self._stop('elicitation_rejected')
@@ -290,6 +397,7 @@ class LoginProtocol:
         if url.scheme != 'https' or not url.hostname or url.username or url.password or any(ord(c) < 33 for c in p['url']):
             return self._stop('url_rejected')
         self.elicitation_ids.add(p['elicitationId'])
+        self.pending_elicitation_id = p['elicitationId']
         if self.cancelled:
             return self.cancel()
         # No automatic open and no URL allowlist claim: trusted local UI must verify destination.

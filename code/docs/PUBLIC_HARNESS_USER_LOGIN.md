@@ -35,18 +35,42 @@ junction、符号链接、设备路径或他人可以改动的目录。程序只
 一次未结算的登录。终端会显示这个新目录的位置，供以后显式 `--profile` 选择。
 
 入口只接受 Windows 的真实本地交互终端。没有无人值守 `--yes`、脚本确认或环境变量
-绕过。每次提示只输入 `yes` 或 `no`；不要在终端输入密码、验证码、token 或登录链接。
+绕过。每次提示输入 `yes` 或 `no` 后按回车；允许的字符会显示在终端中并可用退格修改，
+其他字符只显示为 `?`，不会原样回显。不要在终端输入密码、验证码、token 或登录链接。
 
 1. 阅读并确认服务、浏览器、存储与保留说明，然后创建新目录并启动已校验的原生程序。
 2. 核验 Product/catalog 与空账号后，再明确确认发起一次官方 CN 登录。
 3. 在原生打开的官方页面亲自认证。原生可能在外层交互提示之前打开默认浏览器。
    本入口不另开浏览器，不打印或保存登录 URL，不把任意表单转成终端凭据输入。
 4. 原生请求结算后，分别回读账号与 `auth/status`，再在本地终端确认必要的公开账号
-   身份。ACK 不是成功证明；`auth/status` 也不是远端套餐或模型权限证明。
+   身份。诊断中的 `login_ack` 只表示登录 RPC 返回了有效结果，不证明登录成功；
+   `protocol_state=not_authenticated` 表示 RPC 成功返回但账号与状态回读仍未认证。
+   RPC 返回错误后，官方 beta16 仍可能在同一进程后台提交账号/Product；入口保留该进程，
+   在最多 30 秒内每 2 秒回读，最多 15 对账号/状态读取（仍受原总期限和 IO 预算限制）。
+   两次读之间出现提交时重新取得一致快照，绝不重发 `auth/login`。恢复成功仍需用户确认身份；
+   期限耗尽为 `unknown` / `login_reconciliation_unknown`，保留 `unknown_retained`，
+   不能将暂时的未认证解释为永久失败或安全重试依据。`login_error_code` 只给 JSON-RPC 整数错误码，
+   不保存错误文本或 data。`profile_failure_code` 只给固定 profile 错误类别；未知异常统一归为
+   `PROFILE_OPERATION_FAILED`。`auth/status` 也不是远端套餐或模型权限证明。
 5. 只有身份确认、自然退出 0、owned Job 为空、IO/句柄清理完成及目录权限复核都通过，
    才保存无凭据的账号身份摘要供后续匹配。不会自动创建模型会话或发送 prompt。
 
+登录 URL 交接按 JSON-RPC 的原请求 ID 回应。仅接受有界的数值或可打印字符串 ID，
+且字符串 ID 的响应帧不得超过 2048 字节；字符串 ID 只在当前进程内暂存用于相关响应，
+不写入诊断、终端提示或日志。官方浏览器登录独立于终端提示：即使用户尚未输入 yes，
+原生也可取消对应 URL 请求并发送 `elicitation/complete`。入口按两个关联 ID 关闭该提示，
+结算其待处理回复；不将服务端关闭提示当作用户取消或认证成功。其他 ACP v2 `$/` 控制通知
+仍忽略，未知业务通知仍失败关闭；入口不宣告自己未实现的 `config.warning` 能力。
+`handoff_reply_sent`、`peer_handoff_cancelled`、`handoff_completed` 和 `reconciliation_reads`
+只记录布尔时序/有限计数，不含 URL 或身份。诊断只给 `auth/`、`account/`、`product/`、`session/`、`elicitation/`
+的固定类别，其他通知归为通用类别；不会记录厂商的方法名或参数。
+
 ## 浏览器与存储边界
+
+独立原生进程保留启动终端的 `HTTP_PROXY`、`HTTPS_PROXY`、`ALL_PROXY`、`NO_PROXY`
+（含小写形式），由固定官方 HTTP 实现处理优先级与绕过规则。仅启用 Windows 系统代理
+不等于这些变量已存在；本入口不读取系统代理、不修改代理设置，也不继承禁用 TLS 校验
+或任意 Node 启动选项。代理值不加入登录诊断。该环境兼容行为不证明官方登录已成功。
 
 默认浏览器可能复用当前 Windows 账号已有的浏览器登录状态。`HOME`、新目录和
 Windows Job 均不能隔离 cookies，也不能控制已存在的浏览器窗口。需要隔离时，用户
@@ -54,7 +78,17 @@ Windows Job 均不能隔离 cookies，也不能控制已存在的浏览器窗口
 参数，不使用内部 opener 或 `BROWSER` 技巧冒充隔离。
 
 新 profile 在创建时使用仅当前 Windows 用户和 SYSTEM 的受保护 ACL，并核验所有
-子目录/文件的 ACL 与普通文件属性。独立目录包括 `home/config/appdata/localappdata/`
+子目录/文件的 ACL 与普通文件属性。Windows 会在 `home\AppData\Local\Microsoft\Windows\INetCache`
+下创建指向同级 `IE` 目录的 `Content.IE5` 兼容 junction；校验只允许这个精确的同 profile
+目标及已知 ACL，并验证目标目录本身，不沿 junction 重复遍历。其他 reparse point 仍拒绝。
+WorkBuddy 还会在 `localappdata\Quark\User Data\Default` 下的 `Cache`、`Network`、
+`Safe Browsing Network`、`Shared Dictionary` 四个目录及其子树加入固定 Windows capability
+SID ACE，并在 `Local Storage\leveldb` 文件上加入 Everyone 的只读属性拒绝 ACE；校验只在
+这些精确子树接受已知 ACL 形状。`Default\Session Storage` 下的直接文件也会使用相同的
+严格 DENY/ALLOW ACE 形状。Windows 还会在 `localappdata\Microsoft\Windows\Caches` 的直接文件
+上授予一个 package SID 和一个 capability SID 只读 ACE；只接受当前用户 owner、原顺序的
+五个 ACE 和固定只读权限。子目录、嵌套文件及其他路径仍要求当前用户和 SYSTEM 的严格 ACL。
+独立目录包括 `home/config/appdata/localappdata/`
 `temp/workspace/logs/control`。`control` 不加入原生环境变量，也不是原生 cwd，用于
 客户端自己的控制记录。整个目录仍属于同一 OS 用户，这不是多租户或恶意同用户的
 安全边界，也不能抵抗有权修改父目录、管理员或正在并发篡改文件的进程。
@@ -73,6 +107,10 @@ ACL **不是原生凭据加密**。公开 beta16 的保护源码存在默认关�
 取消仅发送协议通知，不代表请求已结算或账号没有保存。取消/超时后等待有限的
 结算与账号回读；不明状态保留目录且禁止自动重试。如果 owned 进程或 IO 仍无法
 确认清理，保留 owner 和 profile 锁，不把强制终止当作成功。
+
+若 owned cleanup 已证实，而完整 profile 校验失败，先持久撤销身份摘要并将控制记录
+置为 unknown；只有该控制记录复核成功后才释放锁并失败退出，不永久卡住终端。
+完整目录 ACL 仍为未通过，该 profile 仍不得用于模型或恢复登录。控制记录隔离失败仍保留 owner。
 
 每次模型执行前，客户端必须先持久写入 `execution_started`，并在实际初始化时重新
 核验 Product、账号摘要和 `auth/status`。metadata 里写着已确认不能代替真实回读。

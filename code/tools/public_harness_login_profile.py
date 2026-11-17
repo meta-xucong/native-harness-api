@@ -22,6 +22,7 @@ DIRECTORIES = ('home', 'config', 'appdata', 'localappdata', 'temp', 'workspace',
 MANIFEST = 'managed-profile.json'
 LOCK = 'profile.lock'
 PREFIX = 'workbuddy-managed-'
+WORKBUDDY_APP_CAPABILITY_SID = 'S-1-15-3-1024-1528657515-1944437972-2795272136-1227674495-293963776-353393192-4060142787-1908764039'
 PINS = dict(executable=EXE_SHA, host_node=NODE_EXE_SHA, product_config=OVERLAY_SHA,
             sfe_tree=SFE_TREE['sha256'], node_tree=NODE_TREE['sha256'])
 
@@ -36,7 +37,7 @@ WORKBUDDY_POLICY = ProfilePolicy('public-beta16-cn-managed', PREFIX, PINS)
 
 STATES = frozenset(('fresh', 'login_started', 'authenticated_confirmed', 'unknown_retained',
                     'cancelled_unauthenticated', 'unauthenticated', 'identity_rejected',
-                    'execution_started', 'execution_unknown'))
+                    'execution_started', 'execution_unknown', 'recovery_started'))
 
 
 class ProfileError(RuntimeError):
@@ -163,7 +164,7 @@ class WinSecurity:
 
     def check(self, path, directory, protected=False):
         owner, acl, descriptor = C.c_void_p(), C.c_void_p(), C.c_void_p()
-        require(self.a.GetNamedSecurityInfoW(str(path), 1, 5, C.byref(owner), None,
+        require(self.a.GetNamedSecurityInfoW(_win32_name(path), 1, 5, C.byref(owner), None,
                     C.byref(acl), None, C.byref(descriptor)) == 0)
         try:
             require(acl.value)
@@ -191,16 +192,246 @@ class WinSecurity:
         finally:
             self.k.LocalFree(descriptor)
 
+    def check_inetcache_compat_junction(self, path):
+        """Accept only the Windows-created Content.IE5 alias ACL seen under INetCache."""
+        owner, acl, descriptor = C.c_void_p(), C.c_void_p(), C.c_void_p()
+        require(self.a.GetNamedSecurityInfoW(str(path), 1, 5, C.byref(owner), None,
+                    C.byref(acl), None, C.byref(descriptor)) == 0)
+        try:
+            require(acl.value and self._sid(owner) == self.sid)
+            control, revision = C.c_uint16(), C.c_uint32()
+            require(self.a.GetSecurityDescriptorControl(descriptor, C.byref(control), C.byref(revision)))
+            require(control.value & 4)
+            count = C.c_uint16.from_address(acl.value + 4).value
+            require(count == 3)
+            actual = []
+            for index in range(count):
+                ace = C.c_void_p()
+                require(self.a.GetAce(acl, index, C.byref(ace)))
+                header = C.string_at(ace.value, 4)
+                size = int.from_bytes(header[2:4], 'little')
+                require(size >= 20)
+                mask = C.c_uint32.from_address(ace.value + 4).value
+                sid = self._sid(ace.value + 8)
+                actual.append((header[0], header[1], mask, sid))
+            _check_inetcache_compat_aces(self._sid(owner), self.sid, actual)
+        finally:
+            self.k.LocalFree(descriptor)
+
+    def check_workbuddy_app_data(self, path, directory, app_data_root):
+        """Accept only observed Quark AppContainer/LevelDB/session-file ACE shapes."""
+        try:
+            self.check(path, directory)
+            return
+        except ProfileError:
+            pass
+        require(_is_workbuddy_restricted_acl_path(path, app_data_root, directory))
+        owner, acl, descriptor = C.c_void_p(), C.c_void_p(), C.c_void_p()
+        require(self.a.GetNamedSecurityInfoW(str(path), 1, 5, C.byref(owner), None,
+                    C.byref(acl), None, C.byref(descriptor)) == 0)
+        try:
+            require(acl.value)
+            control, revision = C.c_uint16(), C.c_uint32()
+            require(self.a.GetSecurityDescriptorControl(descriptor, C.byref(control), C.byref(revision)))
+            require(control.value & 4)
+            entries = []
+            count = C.c_uint16.from_address(acl.value + 4).value
+            for index in range(count):
+                ace = C.c_void_p()
+                require(self.a.GetAce(acl, index, C.byref(ace)))
+                header = C.string_at(ace.value, 4)
+                require(int.from_bytes(header[2:4], 'little') >= 20)
+                entries.append((header[0], header[1], C.c_uint32.from_address(ace.value + 4).value,
+                                self._sid(ace.value + 8)))
+            _check_workbuddy_app_data_aces(path, app_data_root, self._sid(owner), self.sid,
+                    directory, entries)
+        finally:
+            self.k.LocalFree(descriptor)
+
+    def check_workbuddy_windows_cache_file(self, path, profile_root):
+        """Accept the observed Windows Caches direct-file ACE shape only."""
+        require(_is_workbuddy_windows_cache_file(path, profile_root, False))
+        owner, acl, descriptor = C.c_void_p(), C.c_void_p(), C.c_void_p()
+        require(self.a.GetNamedSecurityInfoW(str(path), 1, 5, C.byref(owner), None,
+                    C.byref(acl), None, C.byref(descriptor)) == 0)
+        try:
+            require(acl.value)
+            control, revision = C.c_uint16(), C.c_uint32()
+            require(self.a.GetSecurityDescriptorControl(descriptor, C.byref(control), C.byref(revision)))
+            require(control.value & 4 and not control.value & 0x1000)
+            entries = []
+            count = C.c_uint16.from_address(acl.value + 4).value
+            require(count == 5)
+            for index in range(count):
+                ace = C.c_void_p()
+                require(self.a.GetAce(acl, index, C.byref(ace)))
+                header = C.string_at(ace.value, 4)
+                require(int.from_bytes(header[2:4], 'little') >= 20)
+                entries.append((header[0], header[1], C.c_uint32.from_address(ace.value + 4).value,
+                                self._sid(ace.value + 8)))
+            _check_workbuddy_windows_cache_aces(self._sid(owner), self.sid, entries)
+        finally:
+            self.k.LocalFree(descriptor)
+
 
 def _info(path, directory):
-    info = path.lstat()
+    info = Path(_win32_name(path)).lstat()
     require(not stat.S_ISLNK(info.st_mode) and not getattr(info, 'st_file_attributes', 0) & 0x400)
     require(stat.S_ISDIR(info.st_mode) if directory else stat.S_ISREG(info.st_mode) and info.st_nlink == 1)
     return info
 
 
+def _win32_name(path):
+    # Agent session history encodes the absolute workspace path in a
+    # directory name. Keep logical paths for profile rules, and use native
+    # extended paths for the filesystem and ACL calls during the walk.
+    name = str(path)
+    if os.name == 'nt' and len(name.encode('utf-16-le')) // 2 >= 248:
+        return '\\\\?\\' + name
+    return name
+
+
 def _identity(info):
     return info.st_dev, info.st_ino
+
+
+def _is_inetcache_compat_junction(path, root, security):
+    if os.name != 'nt':
+        return False
+    alias = root / 'home' / 'AppData' / 'Local' / 'Microsoft' / 'Windows' / 'INetCache' / 'Content.IE5'
+    if os.path.normcase(os.path.abspath(path)) != os.path.normcase(os.path.abspath(alias)):
+        return False
+    is_junction = getattr(path, 'is_junction', None)
+    if not callable(is_junction) or not is_junction():
+        return False
+    target = path.resolve(strict=True)
+    expected = path.parent / 'IE'
+    expected_target = expected.resolve(strict=True)
+    require(os.path.normcase(str(target)) == os.path.normcase(str(expected_target)))
+    info = expected.lstat()
+    require(stat.S_ISDIR(info.st_mode) and not getattr(info, 'st_file_attributes', 0) & 0x400)
+    security.check(expected, True)
+    security.check_inetcache_compat_junction(path)
+    return True
+
+
+def _workbuddy_app_data_root(root):
+    return root / 'localappdata' / 'Quark' / 'User Data'
+
+
+def _is_workbuddy_app_data_path(path, root):
+    candidate = os.path.normcase(os.path.abspath(path))
+    data_root = os.path.normcase(os.path.abspath(_workbuddy_app_data_root(root)))
+    return candidate == data_root or candidate.startswith(data_root + os.sep)
+
+
+def _is_workbuddy_appcontainer_root(path, app_data_root):
+    roots = ('Cache', 'Network', 'Safe Browsing Network', 'Shared Dictionary')
+    normalized = os.path.normcase(os.path.abspath(path))
+    return any(normalized == os.path.normcase(os.path.abspath(app_data_root / 'Default' / name))
+            for name in roots)
+
+
+def _is_workbuddy_appcontainer_path(path, app_data_root):
+    roots = ('Cache', 'Network', 'Safe Browsing Network', 'Shared Dictionary')
+    candidate = os.path.normcase(os.path.abspath(path))
+    return any(
+        candidate == normalized or candidate.startswith(normalized + os.sep)
+        for normalized in (os.path.normcase(os.path.abspath(app_data_root / 'Default' / name))
+                           for name in roots))
+
+
+def _is_workbuddy_leveldb_file(path, app_data_root, directory):
+    if directory:
+        return False
+    candidate = os.path.normcase(os.path.abspath(path))
+    leveldb = os.path.normcase(os.path.abspath(app_data_root / 'Default' / 'Local Storage' / 'leveldb'))
+    return candidate.startswith(leveldb + os.sep)
+
+
+def _is_workbuddy_session_storage_file(path, app_data_root, directory):
+    if directory:
+        return False
+    parent = os.path.normcase(os.path.abspath(path.parent))
+    session_storage = os.path.normcase(os.path.abspath(app_data_root / 'Default' / 'Session Storage'))
+    return parent == session_storage
+
+
+def _is_workbuddy_restricted_acl_path(path, app_data_root, directory):
+    return (_is_workbuddy_appcontainer_path(path, app_data_root)
+            or _is_workbuddy_leveldb_file(path, app_data_root, directory)
+            or _is_workbuddy_session_storage_file(path, app_data_root, directory))
+
+
+def _is_workbuddy_windows_cache_file(path, profile_root, directory):
+    if directory:
+        return False
+    cache_root = profile_root / 'localappdata' / 'Microsoft' / 'Windows' / 'Caches'
+    return os.path.normcase(os.path.abspath(path.parent)) == os.path.normcase(os.path.abspath(cache_root))
+
+
+def _check_workbuddy_appcontainer_aces(owner, sid, directory, capability_root, entries):
+    require(owner == sid)
+    capability_sids = {entry[3] for entry in entries if entry[3] == WORKBUDDY_APP_CAPABILITY_SID}
+    require(capability_sids == {WORKBUDDY_APP_CAPABILITY_SID})
+    capability = WORKBUDDY_APP_CAPABILITY_SID
+    inherited = not capability_root
+    common_flags = 0x13 if directory else 0x10
+    expected = {
+        (0, common_flags, 0x1f01ff, 'S-1-5-18'),
+        (0, common_flags, 0x1f01ff, sid),
+        (0, 0x10 if inherited else 0, 0x1301bf, capability),
+    }
+    if directory:
+        expected.add((0, 0x1b if inherited else 0x0b, 0xe0010000, capability))
+    require(len(entries) == len(expected) and set(entries) == expected)
+    return True
+
+
+def _check_workbuddy_app_data_aces(path, app_data_root, owner, sid, directory, entries):
+    if _is_workbuddy_appcontainer_path(path, app_data_root):
+        return _check_workbuddy_appcontainer_aces(owner, sid, directory,
+                _is_workbuddy_appcontainer_root(path, app_data_root), entries)
+    require(_is_workbuddy_restricted_acl_path(path, app_data_root, directory))
+    return _check_workbuddy_leveldb_aces(owner, sid, entries)
+
+
+def _check_workbuddy_leveldb_aces(owner, sid, entries):
+    require(owner == sid)
+    expected = [
+        (1, 0, 0x20, 'S-1-1-0'),
+        (0, 0x10, 0x1f01ff, 'S-1-5-18'),
+        (0, 0x10, 0x1f01ff, sid),
+    ]
+    require(entries == expected)
+    return True
+
+
+def _check_workbuddy_windows_cache_aces(owner, sid, entries):
+    require(owner == sid and len(entries) == 5)
+    package_sid, capability_sid = entries[1][3], entries[2][3]
+    require(type(package_sid) is str and package_sid.startswith('S-1-15-2-'))
+    require(type(capability_sid) is str and capability_sid.startswith('S-1-15-3-'))
+    expected = [
+        (0, 0, 0x1f01ff, sid),
+        (0, 0, 0x120089, package_sid),
+        (0, 0, 0x120089, capability_sid),
+        (0, 0x10, 0x1f01ff, 'S-1-5-18'),
+        (0, 0x10, 0x1f01ff, sid),
+    ]
+    require(entries == expected)
+    return True
+
+
+def _check_inetcache_compat_aces(owner, sid, entries):
+    require(owner == sid)
+    expected = [
+        (1, 0, 0x1, 'S-1-1-0'),
+        (0, 3, 0x1f01ff, 'S-1-5-18'),
+        (0, 3, 0x1f01ff, sid),
+    ]
+    require(entries == expected)
+    return True
 
 
 def _physical(path, security):
@@ -251,6 +482,7 @@ class ManagedProfile:
         self._identity = _physical(root, security)
         self._closed = False
         self._execution_owner = False
+        self._recovery_owner = False
 
     @property
     def state(self):
@@ -286,14 +518,25 @@ class ManagedProfile:
         stack = [(self.root, 0)]
         while stack:
             parent, depth = stack.pop(); require(depth <= 32)
-            with os.scandir(parent) as entries:
+            with os.scandir(_win32_name(parent)) as entries:
                 for entry in entries:
                     total += 1; require(total <= 50000)
-                    path = Path(entry.path)
-                    info = path.lstat()
+                    path = parent / entry.name
+                    if _is_inetcache_compat_junction(path, self.root, self._security):
+                        # Its target is a sibling that is validated and traversed normally.
+                        continue
+                    info = entry.stat(follow_symlinks=False)
                     is_dir = stat.S_ISDIR(info.st_mode)
                     _info(path, is_dir)
-                    self._security.check(path, is_dir)
+                    if _is_workbuddy_app_data_path(path, self.root):
+                        self._security.check_workbuddy_app_data(path, is_dir, _workbuddy_app_data_root(self.root))
+                    elif _is_workbuddy_windows_cache_file(path, self.root, is_dir):
+                        try:
+                            self._security.check(path, is_dir)
+                        except ProfileError:
+                            self._security.check_workbuddy_windows_cache_file(path, self.root)
+                    else:
+                        self._security.check(path, is_dir)
                     if is_dir:
                         stack.append((path, depth + 1))
         for name in DIRECTORIES:
@@ -305,7 +548,7 @@ class ManagedProfile:
     @_api
     def record(self, state, confirmed_account_digest=None):
         require(type(state) is str and state in STATES
-                and state not in ('fresh', 'execution_started', 'execution_unknown'))
+                and state not in ('fresh', 'execution_started', 'execution_unknown', 'recovery_started'))
         require((self.state == 'fresh' and state == 'login_started') or
                 (self.state == 'login_started' and state not in ('fresh', 'login_started')))
         self._replace(state, confirmed_account_digest)
@@ -336,6 +579,20 @@ class ManagedProfile:
         self._execution_owner = False
 
     @_api
+    def begin_recovery(self):
+        require(self.policy == WORKBUDDY_POLICY and self.state == 'unknown_retained')
+        self._replace('recovery_started', None)
+        self._recovery_owner = True
+
+    @_api
+    def finish_recovery(self, confirmed_account_digest):
+        """Caller has observed owned cleanup and either confirmed identity or declined."""
+        require(self._recovery_owner and self.state == 'recovery_started')
+        self._replace('authenticated_confirmed' if confirmed_account_digest is not None else 'unknown_retained',
+                      confirmed_account_digest)
+        self._recovery_owner = False
+
+    @_api
     def quarantine(self):
         """Reduce authority even when an unrelated native file fails its ACL check.
 
@@ -344,7 +601,8 @@ class ManagedProfile:
         uncertain owned process/lock. Never logout, delete or repair permissions.
         """
         current = self._control()
-        state = 'execution_unknown' if current['state'] in ('execution_started', 'execution_unknown') else 'unknown_retained'
+        state = current['state'] if current['state'] == 'recovery_started' else (
+            'execution_unknown' if current['state'] in ('execution_started', 'execution_unknown') else 'unknown_retained')
         data = dict(current, state=state, confirmed_account_digest=None)
         _check_manifest(data, self.root.name, self._security.sid, self.policy)
         if data != current:
@@ -356,20 +614,29 @@ class ManagedProfile:
         self._execution_owner = False
 
     @_api
-    def environment(self, host_node):
-        require(self.state in ('fresh', 'login_started', 'execution_started'))
+    def environment(self, host_node, *, node_runtime=False):
+        require(self.state in ('fresh', 'login_started', 'execution_started', 'recovery_started'))
         require(self.state != 'execution_started' or self._execution_owner)
+        require(self.state != 'recovery_started' or (node_runtime and self._recovery_owner))
         self.verify()
         host_node = Path(host_node)
         require(host_node.is_absolute() and host_node.name.lower() == 'node.exe')
         _physical(host_node.parent, self._security)
         require(0 < _info(host_node, False).st_size <= 200 * 1024 * 1024)
-        require(sha(host_node) == NODE_EXE_SHA)
+        if node_runtime:
+            from native_harness_api.workbuddy_node_assets import NODE_ASSETS
+            require(self.policy == WORKBUDDY_POLICY and sha(host_node) == NODE_ASSETS['node_exe_sha256'])
+        else:
+            require(sha(host_node) == NODE_EXE_SHA)
         system = Path(os.environ.get('SystemRoot', r'C:\Windows'))
         _physical(system, self._security)
         result = {'SystemRoot': str(system), 'WINDIR': str(system),
                   'PATH': str(system / 'System32'),
                   'AGENT_HARNESS_HOST_NODE_EXECUTABLE': str(host_node), 'DISABLE_TELEMETRY': '1'}
+        # The fixed Harness HTTP transport reads these keys from its environment.
+        # Iterate actual items: Windows environment lookup is case-insensitive.
+        result.update((key, value) for key, value in os.environ.items()
+                      if key.lower() in ('http_proxy', 'https_proxy', 'all_proxy', 'no_proxy'))
         for folder, keys in [('home', ('HOME', 'USERPROFILE')),
                 ('config', ('CODEBUDDY_CONFIG_DIR', 'WORKBUDDY_CONFIG_DIR')),
                 ('appdata', ('APPDATA',)), ('localappdata', ('LOCALAPPDATA',)), ('temp', ('TEMP', 'TMP'))]:

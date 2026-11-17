@@ -72,6 +72,19 @@ class MultiRuntimeTests(unittest.TestCase):
         b=config.configured_bindings[0]
         with self.assertRaises(ValueError):config.resolve(Binding(b.binding_id,2,b.model_alias,b.native_model))
 
+    def test_named_pipe_is_an_explicit_recipe_without_reinterpreting_stdio(self):
+        from native_harness_api.public_sfe_adapter import project_workbuddy_node_result
+        from native_harness_api.workbuddy_node_assets import ADAPTER_ID, PIPE_ADAPTER_ID
+        legacy = target(ADAPTER_ID)
+        pipe = target(PIPE_ADAPTER_ID)
+        self.assertEqual(legacy['recipe']['asset_identity'], pipe['recipe']['asset_identity'])
+        self.assertNotEqual(legacy['binding'], pipe['binding'])
+        for expected, item in ((ADAPTER_ID, legacy), (PIPE_ADAPTER_ID, pipe)):
+            config = MultiHarnessConfig.from_value(dict(self.value, targets=[item]))
+            invoke, project = config.resolve(config.configured_bindings[0])
+            self.assertEqual(invoke.__self__.workbuddy_node_adapter, expected)
+            self.assertIs(project, project_workbuddy_node_result)
+
     def test_schema_and_unexpected_options(self):
         for key,value in [('schema_version',True),('schema_version',1),('adapter','fake'),('fake_mode','success'),('binding',target()['binding'])]:
             v=dict(self.value);v[key]=value

@@ -7,6 +7,8 @@ code/src/native_harness_api/windows_job.py text eol=lf
 code/tools/installed_workbuddy_smoke.py text eol=lf
 code/tools/installed_smoke_controller.ps1 text eol=lf
 code/packaging/** text eol=lf
+# Preserve the byte hashes of the npm inputs used to stage the pinned Node runtime.
+code/packaging/workbuddy-node-package*.json -text !eol whitespace=cr-at-eol
 .github/workflows/workbuddy-local-trial.yml text eol=lf
 # Complete client sources are byte-verified against their Git commit.
 code/src/native_harness_api/*.py text eol=lf

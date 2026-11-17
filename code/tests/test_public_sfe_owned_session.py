@@ -7,8 +7,10 @@ import tempfile
 import threading
 import time
 import unittest
+from native_harness_api.public_sfe_adapter import PENDING, project_workbuddy_node_result
 from native_harness_api.public_sfe_owned_session import PublicSfeOwnedSession
 from native_harness_api.supervised_acp_transport import SupervisedACPTransport
+from native_harness_api.workbuddy_node_session import WorkBuddyNodeOwnedSession
 
 CHILD = Path(__file__).parent / 'fakes' / 'public_sfe_child.py'
 
@@ -116,6 +118,72 @@ class PublicSfeOwnedTests(unittest.TestCase):
         start = time.monotonic(); result, _, _ = self.run_mode('init_hang', timeout=.2, cleanup_timeout=.3)
         self.assertLess(time.monotonic() - start, 5)
         self.assertEqual(result['outcome'], 'indeterminate'); self.assertFalse(result['session']['prompt_intent_issued'])
+
+    def test_workbuddy_node_retains_pre_prompt_step_after_timeout_and_cleanup(self):
+        for mode, step, opened, closed in (
+                ('node_product_timeout', 'product/updated', False, False),
+                ('node_session_timeout', 'session/new', True, False),
+                ('node_model_timeout', 'session/set_config_option', True, True)):
+            with self.subTest(step=step):
+                result, _, _ = self.run_mode(mode, engine_class=WorkBuddyNodeOwnedSession,
+                                             timeout=1, cleanup_timeout=2)
+                evidence = result['session']
+                self.assertEqual(result['fault'], 'TURN_NOT_COMPLETED', result)
+                self.assertEqual(evidence['failure_code'], 'timeout', result)
+                self.assertEqual(evidence['phase'], 'indeterminate', result)
+                self.assertEqual(evidence['last_setup_step'], step, result)
+                self.assertFalse(evidence['prompt_intent_issued'], result)
+                self.assertTrue(result['cleanup_confirmed'], result)
+                self.assertIs(evidence['session_new_intent_issued'], opened)
+                self.assertIs(evidence['session_close_acknowledged'], closed)
+                terminal = project_workbuddy_node_result(result, 'synthetic-b')
+                if opened == closed:
+                    self.assertEqual(terminal['code'], 'PRE_PROMPT_ABORTED')
+                    self.assertEqual(terminal['liveness'], 'stopped_confirmed')
+                else:
+                    self.assertEqual(terminal, PENDING)
+
+    def test_workbuddy_node_closes_session_when_new_reply_arrives_during_cleanup(self):
+        result, _, transport = self.run_mode('node_late_session', engine_class=WorkBuddyNodeOwnedSession,
+                                             timeout=1.5, cleanup_timeout=4)
+        evidence = result['session']
+        self.assertEqual(evidence['failure_code'], 'timeout', result)
+        self.assertEqual(evidence['phase'], 'indeterminate', result)
+        self.assertTrue(evidence['session_new_intent_issued'], result)
+        self.assertTrue(evidence['session_close_acknowledged'], result)
+        self.assertTrue(result['cleanup_confirmed'], result)
+        self.assertFalse(evidence['prompt_intent_issued'], result)
+        self.assertEqual(transport.starts, 1)
+        self.assertEqual(project_workbuddy_node_result(result, 'synthetic-b')['code'], 'PRE_PROMPT_ABORTED')
+
+    def test_workbuddy_node_replays_prompt_failure_frames_over_stdio(self):
+        for mode, first in (
+                ('node_invalid_utf8', {'kind': 'invalid_utf8'}),
+                ('node_invalid_json', {'kind': 'invalid_json'}),
+                ('node_invalid_frame_structure', {'kind': 'invalid_frame_structure'}),
+                ('node_invalid_jsonrpc_version', {'kind': 'invalid_jsonrpc_version'}),
+                ('node_rpc_error', {'kind': 'rpc_error', 'method': 'session/prompt', 'rpc_error_code': -32603}),
+                ('node_missing_ack_fields', {'kind': 'prompt_ack_missing_fields', 'method': 'session/prompt',
+                                             'missing_fields': ['_meta.codebuddy.ai/requestId']}),
+                ('node_control_notification', None)):
+            with self.subTest(mode=mode):
+                result, _, transport = self.run_mode(mode, engine_class=WorkBuddyNodeOwnedSession)
+                session = result['session']
+                self.assertEqual(transport.starts, 1)
+                self.assertTrue(session['prompt_intent_issued'])
+                self.assertTrue(session['session_close_acknowledged'])
+                self.assertTrue(result['cleanup_confirmed'])
+                self.assertEqual(session.get('first_failed_frame'), first)
+                projected = project_workbuddy_node_result(result, 'synthetic-b')
+                if first is not None:
+                    self.assertFalse(session['turn']['insert_acknowledged'])
+                    self.assertFalse(session['turn']['terminal_observed'])
+                    self.assertEqual(projected, PENDING)
+                else:
+                    self.assertTrue(session['turn']['insert_acknowledged'])
+                    self.assertTrue(session['turn']['terminal_observed'])
+                    self.assertEqual(projected['outcome'], 'succeeded')
+                self.assertNotIn('PRIVATE', str(result))
 
     def test_missing_job_empty_or_exit_code_never_confirms(self):
         for field in ('owned_job_empty', 'host_exit_code'):

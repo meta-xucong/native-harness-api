@@ -198,8 +198,7 @@ def write_connection(root, profile, target):
     from prepare_native_deployment import build_plan, write_plan
     spec = {'schema_version': 2, 'windows_data_dir': str(profile / 'control'), 'targets': [target],
         'bridge_origin': input('Bridge HTTPS 地址：').strip(),
-        'user_id': int(input('Sub2API 用户数字 ID：')),
-        'api_key_id': int(input('Sub2API 专用 Key 数字 ID（不是 Key 密钥）：')),
+        'ingress': 'openai',
         'bridge_data_dir': input('服务器 Bridge 数据目录（如 /var/lib/native-bridge）：').strip()}
     output = root / 'connection'
     write_plan(output, build_plan(spec))
@@ -207,8 +206,8 @@ def write_connection(root, profile, target):
     load_node(path)
     remember(root, path)
     print('配置已写入 connection，准入仍关闭；本次没有启动 Node 或发起模型请求。')
-    print('将 bridge.json / facade.json / sub2api.native-harness.yaml 交服务端配置；其余文件留本机。')
-    print('按 DEPLOYMENT_CHAIN.zh-CN.md 完成服务器接入后，再双击 Client.cmd。由你确认账号并发起最小请求。')
+    print('将 bridge.json / facade.json / openai-provider.json 交服务端配置；其余文件留本机。')
+    print('按 OPENAI_PROVIDER.md 配置原生 Sub2API 普通上游后，再双击 Client.cmd。由你确认账号并发起最小请求。')
     return 0
 
 
@@ -249,8 +248,11 @@ def main(root, argv=None, *, harness='workbuddy'):
         elif (root / 'connection').exists():
             # A previous setup may have finished before its pointer was saved.
             path = root / 'connection' / 'windows-node.json'
-            if not all((root / 'connection' / name).is_file() for name in
-                       ('windows-node.json', 'bridge.json', 'facade.json', 'sub2api.native-harness.yaml', 'deployment-identities.json')):
+            connection = root / 'connection'
+            if (not all((connection / name).is_file() for name in
+                        ('windows-node.json', 'bridge.json', 'facade.json', 'deployment-identities.json'))
+                    or not any((connection / name).is_file() for name in
+                               ('sub2api.native-harness.yaml', 'openai-provider.json'))):
                 raise SetupError('connection 是未完成的配置。请保留现场检查，不会重新生成部署身份。')
         else:
             print('已有部署必须选择原 Node 配置，不能用新部署替代旧任务或旧 data_dir。')
