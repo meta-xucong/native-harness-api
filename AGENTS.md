@@ -1,5 +1,7 @@
 # 开发代理与协作者约束
 
+Native 独立任务账本的合同见 `code/docs/NATIVE_TASK_LEDGER.md`。该本机隔离模式由 Native 负责 WorkBuddy 的账本和调度，保留原 Provider / Node HTTP 合同。迁移使用已收尾账本的副本，单个逻辑账本只允许一个调度方。Alchemy Render Bridge 保持独立。
+
 当前普通 Provider 增量先读 `blueprint/NATIVE-OPENAI-PROVIDER-BLUEPRINT.md`、`NATIVE-OPENAI-PROVIDER-DEVELOPMENT.md` 及两份独审。只改 Native 入口/配置/测试，不改 Bridge、Node、Adapter 或原生 Sub2API。新 `ingress:openai` 从 provider key 绑定固定资源域，不具备可信下游用户身份；这是对下文旧 Sub2 认证归属要求的显式入口例外，不放开多租户。无透传幂等时每 HTTP 为新operation，不能用prompt hash或409声称端到端只执行一次。保留旧入口/旧任务恢复，unknown usage不造token，只允许非收费试验。
 
 当前增量先读 `blueprint/EXISTING-CLI-ADDENDUM.md` 及其独立审计。Codex 默认改为已有官方 CLI / 同用户同 CODEX_HOME；本工具不读取复制凭据，旧 managed adapter 与 WorkBuddy 已接受任务恢复必须保留。仅 Native 最小适配，Bridge/Sub2API 不改；不运行真实账号/模型，不部署/合并，不声称商业转供获准。
@@ -11,7 +13,7 @@ P2 独立本机试验工具另见 blueprint/P2-LOCAL-TRIAL-ADDENDUM.md 和 code/
 ## 不可变边界
 
 - 本地官方 Harness 执行模型调用；VPS 只做任务和 API 包装。禁止提取厂商凭据后自己请求内部模型接口，禁止云端直接推理 fallback。
-- Sub2API 管用户/Key；Bridge 是唯一执行账本；Facade 不新建第二派发队列，PC journal 只作同任务恢复证据。
+- Sub2API 管用户/Key。每个部署只有一个权威执行账本，由配置选用 Native 任务账本或既有 Bridge。Facade 不新建第二派发队列，PC journal 只作同任务恢复证据。
 - 原生工具与审批保留；不默认全关工具，也不默认 fullAccess/自动批准。
 - 同任务已可能开始时禁止重新生成；未知状态、网络超时、租约过期不是安全重试依据。
 - 回放先于新准入；节点离线不能阻断已完成结果的合法回放。结果过期只能报过期，不能重跑。
