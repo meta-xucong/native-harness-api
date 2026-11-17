@@ -4,7 +4,8 @@ from functools import partial
 from pathlib import Path
 
 from .runtime import RuntimeConfig
-from .harness_registry import ExecutionTarget, parse_targets
+from .harness_registry import ExecutionTarget, parse_targets, WORKBUDDY_SFE
+from .workbuddy_node_assets import NODE_RELEASES
 from .bridge_client import BridgeClient, NodeClient
 from .facade import Facade, Service
 from .node import Journal, NodePolicy, Runner
@@ -56,9 +57,10 @@ class MultiHarnessConfig(RuntimeConfig):
         if target is None:
             raise ValueError('Frozen execution target is not configured')
         recipe = target.recipe
-        if recipe['adapter_id'] == 'workbuddy.public-sfe.v1':
+        adapter_id = recipe['adapter_id']
+        if adapter_id == WORKBUDDY_SFE or adapter_id in NODE_RELEASES:
             from .native_trial_runtime import NativeTrialConfig
-            from .public_sfe_adapter import project_result
+            from .public_sfe_adapter import project_result, project_workbuddy_node_result
             profile = Path(recipe['profile_path'])
             native = NativeTrialConfig(
                 source=self.source, ledger_instance=self.ledger_instance,
@@ -66,9 +68,10 @@ class MultiHarnessConfig(RuntimeConfig):
                 data_dir=profile / 'control', assets_root=Path(target.assets_root),
                 profile_root=profile, execution_timeout=self.execution_timeout,
                 cleanup_timeout=self.cleanup_timeout,
+                workbuddy_node_adapter=adapter_id if adapter_id in NODE_RELEASES else None,
                 expected_profile_id=recipe['profile_id'],
                 expected_account_fingerprint=recipe['account_fingerprint'])
-            return native.invoke, project_result
+            return native.invoke, project_workbuddy_node_result if adapter_id in NODE_RELEASES else project_result
         if recipe['adapter_id'] in ('codex.app-server.v1', 'codex.user-cli.v1'):
             from .codex_trial_runtime import invoke
             from .codex_session import project_result

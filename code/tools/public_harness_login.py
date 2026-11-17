@@ -46,6 +46,13 @@ def safe_label(value):
     return ''.join(c if 32 <= ord(c) < 127 else f'\\u{ord(c):04x}' for c in value)
 
 
+def _safe_profile_failure_code(error):
+    code = getattr(error, 'code', None)
+    if code in ('PROFILE_REJECTED', 'WINDOWS_REQUIRED', 'PROFILE_BUSY', 'PROFILE_IO_FAILED'):
+        return code
+    return 'PROFILE_OPERATION_FAILED'
+
+
 class WindowsTTY:
     def __init__(self):
         require(os.name == 'nt' and sys.stdin.isatty() and sys.stdout.isatty() and sys.stderr.isatty())
@@ -73,20 +80,20 @@ class WindowsTTY:
         self._prepare_prompt()
         if action == 'initial_consent':
             print(EXPLANATION)
-            print('Create a NEW retained profile and start the verified native client? Type yes or no:')
+            print('Create a NEW retained profile and start the verified native client? Type yes or no, then press Enter:', flush=True)
         elif action == 'confirm_login_intent':
-            print('The new profile is unauthenticated. Start ONE native CN WorkBuddy sign-in now? yes/no:')
+            print('The new profile is unauthenticated. Start ONE native CN WorkBuddy sign-in now? Type yes or no, then press Enter:', flush=True)
         elif action == 'confirm_url_handoff':
             # Never print a URL/state or open another browser from this runner.
-            print('Native sign-in requested a browser handoff. Verify the official website and intended account in your browser. No link is printed or opened here. Continue waiting for this sign-in? yes/no:')
+            print('Native sign-in requested a browser handoff. Verify the official website and intended account in your browser. No link is printed or opened here. Continue waiting for this sign-in? Type yes or no, then press Enter:', flush=True)
         elif action == 'confirm_account_identity':
             account = event['account']
-            print('Native account reported. Confirm this is the account you intended:')
-            print('Account ID: ' + safe_label(account.get('id')))
-            print('Display name: ' + safe_label(account.get('displayName')))
+            print('Native account reported. Confirm this is the account you intended:', flush=True)
+            print('Account ID: ' + safe_label(account.get('id')), flush=True)
+            print('Display name: ' + safe_label(account.get('displayName')), flush=True)
             org = account.get('organization') or {}
-            print('Organization ID: ' + safe_label(org.get('id')))
-            print('Confirm this account for this retained profile? yes/no:')
+            print('Organization ID: ' + safe_label(org.get('id')), flush=True)
+            print('Confirm this account for this retained profile? Type yes or no, then press Enter:', flush=True)
         else:
             raise ValueError('UI_ACTION_REJECTED')
 
@@ -102,27 +109,45 @@ class WindowsTTY:
                 break
             char = self.console.getwch()
             if char in ('\x00', '\xe0'):
-                self.buffer = '!'; continue
+                if self.buffer != '!':
+                    for _ in self.buffer: sys.stdout.write('\b \b')
+                    self.buffer = '!'
+                    sys.stdout.write('?'); sys.stdout.flush()
+                continue
             if char == '\x03':
                 self.abandon(); return False
             if char in ('\r', '\n'):
                 answer = self.buffer.lower(); self.abandon()
+                sys.stdout.write('\r\n'); sys.stdout.flush()
                 if answer in ('yes', 'no'):
                     return answer == 'yes'
                 return False
             if char == '\b':
-                self.buffer = self.buffer[:-1]
+                if self.buffer == '!':
+                    self.buffer = ''
+                    sys.stdout.write('\b \b'); sys.stdout.flush()
+                elif self.buffer:
+                    self.buffer = self.buffer[:-1]
+                    sys.stdout.write('\b \b'); sys.stdout.flush()
             elif len(self.buffer) < 4 and char.lower() in 'yesno':
-                self.buffer += char
+                if self.buffer != '!':
+                    self.buffer += char
+                    sys.stdout.write(char); sys.stdout.flush()
             else:
-                self.buffer = '!'
+                if self.buffer != '!':
+                    for _ in self.buffer: sys.stdout.write('\b \b')
+                    self.buffer = '!'
+                    # Do not echo arbitrary input at a confirmation prompt.
+                    sys.stdout.write('?'); sys.stdout.flush()
         return None
 
 
 def supervise(assets, profile, ui, *, timeout=600, cancel_grace=10, cleanup_timeout=10,
+              reconcile_timeout=30, reconcile_interval=2,
               job_class=OwnedWindowsJob):
     """Injected collaborators are test-only Python APIs, never CLI bypass options."""
-    for value, maximum in ((timeout, 600), (cancel_grace, 30), (cleanup_timeout, 15)):
+    for value, maximum in ((timeout, 600), (cancel_grace, 30), (cleanup_timeout, 15),
+                           (reconcile_timeout, 30), (reconcile_interval, 2)):
         require(type(value) in (int, float) and math.isfinite(value) and 0 < value <= maximum)
     protocol = LoginProtocol()
     result = dict(schema_version=1, success=False, failure_code='none', stdin_bytes=0,
@@ -130,7 +155,8 @@ def supervise(assets, profile, ui, *, timeout=600, cancel_grace=10, cleanup_time
                   natural_job_empty=False, host_exited=False, owned_job_empty=False,
                   handles_closed=False, io_threads_stopped=False, cleanup_complete=False,
                   profile_verified=False, profile_recorded=False, profile_closed=False,
-                  quarantine_attempted=False, quarantine_verified=False,
+                  profile_failure_code='none',
+                  quarantine_attempted=False, quarantine_recorded=False, quarantine_verified=False,
                   native_account_verified=False, real_model_ready=False)
     incoming, outgoing = queue.Queue(64), queue.Queue(16)
     fault, stop = threading.Event(), threading.Event()
@@ -139,6 +165,7 @@ def supervise(assets, profile, ui, *, timeout=600, cancel_grace=10, cleanup_time
     threads = []; owner = None; uncertain = False; closing = False
     current_action = None; identity_digest = None; private_event = None
     cancel_deadline = None; eof = set(); late_frame = False
+    reconcile_deadline = None; next_reconcile = None
 
     def enqueue(kind, value=None):
         try: incoming.put_nowait((kind, value))
@@ -237,6 +264,18 @@ def supervise(assets, profile, ui, *, timeout=600, cancel_grace=10, cleanup_time
                 eof.add(kind)
                 if kind == 'stdout_eof' and not protocol.done:
                     protocol.closed(); close_input()
+            if protocol.summary()['login_error_code'] is not None and reconcile_deadline is None:
+                reconcile_deadline = min(deadline, time.monotonic() + reconcile_timeout)
+                print('Native login returned an error. Waiting briefly for this same sign-in to settle; no login retry is sent.', flush=True)
+            if (reconcile_deadline is not None and not protocol.done
+                    and protocol.state != 'awaiting_identity' and cancel_deadline is None):
+                if time.monotonic() >= reconcile_deadline:
+                    effects(protocol.reconciliation_expired())
+                elif protocol.state == 'reconciliation_wait':
+                    if next_reconcile is None:
+                        next_reconcile = time.monotonic() + reconcile_interval
+                    elif time.monotonic() >= next_reconcile:
+                        effects(protocol.reconcile()); next_reconcile = None
             action = protocol.next_action
             if action != current_action:
                 ui.abandon(); current_action = None
@@ -326,19 +365,32 @@ def supervise(assets, profile, ui, *, timeout=600, cancel_grace=10, cleanup_time
                     require(profile.verify() is True)
                 result['success'] = result['native_account_verified'] = verified and result['profile_recorded']
                 profile.close(); result['profile_closed'] = True
-        except BaseException:
+        except BaseException as error:
             result['success'] = result['native_account_verified'] = False
             result['failure_code'] = 'profile'
+            result['profile_failure_code'] = _safe_profile_failure_code(error)
             # record() may have replaced the manifest before its verification
-            # failed. Revoke any digest best-effort; never release on this path.
+            # failed. Revoke the digest through the separately checked control
+            # record. A settled owner need not stay alive solely because a
+            # native file fails the full-tree ACL check.
             result['quarantine_attempted'] = True
             try:
                 profile.quarantine()
-                result['quarantine_verified'] = (profile.verify() is True
-                    and profile.state in ('unknown_retained', 'execution_unknown')
-                    and profile.expected_account_digest is None)
+                require(profile.state in ('unknown_retained', 'execution_unknown')
+                        and profile.expected_account_digest is None)
+                result['quarantine_recorded'] = True
             except BaseException:
                 pass
+            if result['quarantine_recorded']:
+                try:
+                    result['quarantine_verified'] = profile.verify() is True
+                except BaseException:
+                    pass
+                if safe:
+                    try:
+                        profile.close(); result['profile_closed'] = True
+                    except BaseException:
+                        pass
         if not result['profile_closed']:
             RETAINED.append((owner, profile, threads))
             result['failure_code'] = 'cleanup_uncertain' if not safe else 'profile'
@@ -391,8 +443,38 @@ def main(argv=None):
         result = supervise(assets, profile, ui)
         print('Retained profile for later --profile: ' + ascii(str(profile.root)))
         print('Login confirmed and retained.' if result['success'] else 'Login not confirmed. Profile retained; no automatic retry, logout or deletion.')
-        if not result['profile_closed']:
-            print('Cleanup is uncertain. Keep this owner process open and resolve owned-process cleanup before reusing the profile.')
+        protocol = result['protocol']
+        summary = {
+            'failure': result['failure_code'] if result['failure_code'] != 'none' else
+                    ('protocol' if protocol.get('failure_code') != 'none' else
+                     'not_authenticated' if protocol.get('state') == 'not_authenticated' else 'none'),
+            'protocol_state': protocol.get('state'),
+            'protocol_failure': protocol.get('failure_code'),
+            'protocol_detail': protocol.get('failure_detail'),
+            'login_sent': protocol.get('login_sent'),
+            'login_ack': protocol.get('login_ack'),
+            'login_error_code': protocol.get('login_error_code'),
+            'browser_handoffs': protocol.get('elicitation_count'),
+            'handoff_reply_sent': protocol.get('handoff_reply_sent'),
+            'peer_handoff_cancelled': protocol.get('peer_handoff_cancelled'),
+            'handoff_completed': protocol.get('handoff_completed'),
+            'reconciliation_reads': protocol.get('reconciliation_reads'),
+            'account_read_verified': protocol.get('account_read_verified'),
+            'auth_status_verified': protocol.get('auth_status_verified'),
+            'timed_out': protocol.get('timeout_seen'),
+            'stderr_bytes_withheld': result['stderr_bytes'],
+            'owned_process_cleanup_verified': result['cleanup_complete'],
+            'profile_acl_verified': result['profile_verified'],
+            'profile_failure_code': result['profile_failure_code'],
+        }
+        print('Safe login diagnostics (no URL, account, or log content): ' + json.dumps(summary, sort_keys=True))
+        if result['failure_code'] == 'profile' and result['profile_closed']:
+            print('Owned-process cleanup is verified. The profile is quarantined and must not be reused; the login process can exit.')
+        elif not result['profile_closed']:
+            if not result['cleanup_complete']:
+                print('Owned-process cleanup is uncertain. Keep this owner process open and resolve it before reusing the profile.')
+            else:
+                print('Owned-process cleanup is verified, but profile verification failed. The profile is retained and must not be reused.')
         return 0 if result['success'] else 1
     except (Exception, KeyboardInterrupt):
         try:

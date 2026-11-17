@@ -4,6 +4,7 @@ Tools live alongside src in the distribution. Loading configuration does not
 import a vendor, verify/login an account, or start native work.
 """
 from dataclasses import dataclass
+import logging
 from pathlib import Path
 import sys
 import uuid
@@ -46,12 +47,15 @@ class NativeTrialConfig(RuntimeConfig):
     bindings: tuple[Binding, ...] = ()
     expected_profile_id: str | None = None
     expected_account_fingerprint: str | None = None
+    workbuddy_node_adapter: str | None = None
     execution_timeout: float = 120
     cleanup_timeout: float = 10
 
     @classmethod
     def from_value(cls, value):
         data = dict(value)
+        if 'workbuddy_node' in data or 'workbuddy_node_adapter' in data:
+            raise ValueError('WorkBuddy Node requires a version 2 target')
         if data.pop('mode', None) != 'workbuddy_local_trial' or data.pop('adapter', None) != 'public_sfe':
             raise ValueError('Explicit local trial and public_sfe required')
         parse_bindings(data)
@@ -117,6 +121,8 @@ class NativeTrialConfig(RuntimeConfig):
         verify_assets, _, open_profile = _tools()
         from .supervised_acp_transport import SupervisedACPTransport
         from .public_sfe_owned_session import PublicSfeOwnedSession
+        from public_harness_runtime_assets import verify_node_runtime_assets, workbuddy_command
+        from .workbuddy_node_session import WorkBuddyNodeOwnedSession
         profile = open_profile(self.profile_root)
         begun = False
         clean = False
@@ -128,7 +134,8 @@ class NativeTrialConfig(RuntimeConfig):
                 raise ValueError('Frozen profile mismatch')
             if self.expected_account_fingerprint is not None and profile.expected_account_digest != self.expected_account_fingerprint:
                 raise ValueError('Frozen account confirmation mismatch')
-            assets = verify_assets(self.assets_root)
+            assets = (verify_node_runtime_assets(self.assets_root, adapter_id=self.workbuddy_node_adapter)
+                      if self.workbuddy_node_adapter else verify_assets(self.assets_root))
             expected_account = profile.expected_account_digest
             workspace = profile.root / 'workspace' / ('request-' + uuid.uuid4().hex)
             workspace.mkdir()
@@ -136,16 +143,27 @@ class NativeTrialConfig(RuntimeConfig):
             begun = True  # Ambiguous durable state writes must also retain ownership.
             try:
                 profile.begin_execution()
-                env = profile.environment(assets['host_node'])
-                engine = PublicSfeOwnedSession(SupervisedACPTransport())
+                if self.workbuddy_node_adapter:
+                    env = profile.environment(assets['host_node'], node_runtime=True)
+                    engine = WorkBuddyNodeOwnedSession(SupervisedACPTransport(),
+                                                       product_version=assets['product_version'])
+                else:
+                    env = profile.environment(assets['host_node'])
+                    engine = PublicSfeOwnedSession(SupervisedACPTransport())
                 result = engine.run(
-                    [str(assets['executable']), '--stdio', '--strict-mcp-config', '--product-config', str(assets['product_config'])],
+                    workbuddy_command(assets),
                     workspace, env, workspace=str(workspace), model_id=model_id,
                     prompt=messages[0]['content'], expected_account_digest=expected_account,
                     timeout=self.execution_timeout, cleanup_timeout=self.cleanup_timeout,
                     **({} if on_event is None else {'on_event': on_event}),
                     **({} if cancellation is None else {'cancellation': cancellation}))
                 clean = result.get('cleanup_confirmed') is True
+                if self.workbuddy_node_adapter:
+                    session = result['session']
+                    if result['fault'] and not session['prompt_intent_issued']:
+                        logging.getLogger(__name__).warning(
+                            'WorkBuddy stopped before prompt: last_setup_step=%s fault=%s protocol_failure=%s cleanup_confirmed=%s',
+                            session['last_setup_step'], result['fault'], session['failure_code'], clean)
                 return result
             finally:
                 # Durable unknown state blocks reuse even after OS releases lock.

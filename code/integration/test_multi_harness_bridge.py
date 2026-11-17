@@ -7,6 +7,7 @@ import tempfile
 from threading import Event
 import time
 import unittest
+from unittest.mock import patch
 
 from render_bridge.api import create_app
 from render_bridge.domain import BridgeStore, SourceScope
@@ -18,10 +19,11 @@ from native_harness_api.facade import Facade, Service
 from native_harness_api.errors import ChannelError
 from native_harness_api.harness_registry import binding_for
 from native_harness_api.node import Journal, NodePolicy, Runner
-from native_harness_api.public_sfe_adapter import DurableNativeAdapter, PENDING
+from native_harness_api.public_sfe_adapter import DurableNativeAdapter, PENDING, project_workbuddy_node_result
 from native_harness_api.runtime import node_tick
 from test_multi_harness_runtime import target
 from test_multi_harness_slot import terminal
+from test_public_sfe_adapter import pre_prompt_timeout
 from test_real_bridge import bridge_server
 from tests.fakes.server import running
 
@@ -31,7 +33,7 @@ class MultiHarnessBridgeTests(unittest.TestCase):
         self.stack = ExitStack(); self.addCleanup(self.stack.close)
         self.root = Path(self.stack.enter_context(tempfile.TemporaryDirectory()))
         self.bindings = tuple(binding_for(target(*pair)['recipe']) for pair in
-            [('workbuddy.public-sfe.v1', 'workbuddy-test'), ('codex.app-server.v1', 'codex-test')])
+            [('workbuddy.public-node.v2', 'workbuddy-test'), ('codex.app-server.v1', 'codex-test')])
         cfg = HarnessConfig(source_id='s',workspace_id='w',ledger_instance='l',node_id='n',executor_instance='e',
             allowed_owners=(('u','k'),),bindings=tuple(HarnessBinding(**b.wire()) for b in self.bindings),
             accepting_new=True,execution_mode='harness_local_trial')
@@ -63,12 +65,12 @@ class MultiHarnessBridgeTests(unittest.TestCase):
             policy=NodePolicy('s','l',frozenset({('u','k')}),self.bindings,mode='harness_local_trial'))
         node_tick(self.runner)
 
-    def send(self,index,key,events=False):
+    def send(self,index,key,events=False,cursor=0):
         binding=self.bindings[index]
         headers={'X-Native-Tenant':'u','X-Native-Principal':'k','X-Native-Operation':key,
             'X-Native-Source':'s','X-Native-Ledger':'l','X-Native-Binding-Digest':digest(binding.wire()),
             'X-Native-Admission-Allowed':'true'}
-        if events: headers['X-Native-Event-Cursor']='0'
+        if events: headers['X-Native-Event-Cursor']=str(cursor)
         return self.http.request('POST','/v1/native-harness/events' if events else '/v1/chat/completions',
             {'model':binding.model_alias,'messages':[{'role':'user','content':'fixture'}]},extra_headers=headers)
 
@@ -111,3 +113,56 @@ class MultiHarnessBridgeTests(unittest.TestCase):
         self.assertEqual(busy.exception.status,429)
         self.assertEqual(node_tick(self.runner)['liveness'],'unknown')
         self.assertEqual(self.calls,['workbuddy'])
+
+    def test_workbuddy_pre_prompt_abort_replays_same_grant_and_releases_slot(self):
+        def invoke(**kwargs):
+            self.calls.append('pre-prompt fixture')
+            return pre_prompt_timeout()
+
+        self.runner.adapter.resolve = lambda _: (invoke, project_workbuddy_node_result)
+        self.queue(0, 'pre-prompt')
+        client = self.runner.client
+        send_result = client.result
+        with patch.object(client, 'result', side_effect=TimeoutError('fixture: report not sent')):
+            self.assertEqual(self.runner.run_once()['code'], 'RESULT_UPLOAD_PENDING')
+        record, = self.runner.journal.records()
+        proof = record['result']
+        self.assertEqual(proof['code'], 'PRE_PROMPT_ABORTED')
+        self.assertEqual(self.runner.adapter.reconcile(record['task'], record['grant']), proof)
+        self.assertEqual(self.service.bridge.capabilities()['queue']['active_tasks'], 1)
+        with self.assertRaises(ChannelError) as busy:
+            self.send(1, 'blocked')
+        self.assertEqual(busy.exception.status, 429)
+
+        def lost_ack(*args):
+            send_result(*args)
+            raise TimeoutError('fixture: committed but ACK lost')
+
+        restarted_adapter = DurableNativeAdapter(self.root/'evidence', bindings=self.bindings,
+            resolve=lambda _: self.fail('Recovery attempted a new invocation'))
+        restarted = Runner(client, Journal(self.root/'journal'), restarted_adapter, policy=self.runner.policy)
+        configured = self.store.harness
+        self.store.harness = replace(configured, bindings=(), accepting_new=False, execution_mode='synthetic')
+        with patch.object(client, 'result', side_effect=lost_ack):
+            self.assertEqual(restarted.run_once(allow_new=False)['code'], 'RESULT_UPLOAD_PENDING')
+        self.assertEqual(self.service.bridge.capabilities()['queue']['active_tasks'], 0)
+        self.assertFalse(restarted.journal.records()[0].get('acknowledged', False))
+        self.assertEqual(restarted.run_once(allow_new=False), proof)
+        saved, = restarted.journal.records()
+        self.assertTrue(saved['acknowledged'])
+        self.assertEqual(saved['grant'], record['grant'])
+        self.assertEqual(self.service.bridge.task(record['task_id'])['result'], proof)
+        with self.assertRaises(ChannelError) as failure:
+            self.send(0, 'pre-prompt')
+        self.assertEqual(failure.exception.code, 'NATIVE_FAILED')
+        page = self.send(0, 'pre-prompt', True)
+        while page['has_more']:
+            page = self.send(0, 'pre-prompt', True, page['next_cursor'])
+        terminal = page['events'][-1]
+        self.assertEqual(terminal['seq'], page['terminal_seq'])
+        self.assertEqual(terminal['type'], 'task_error')
+        self.assertEqual(terminal['data']['code'], 'NATIVE_FAILED')
+        self.store.harness = configured
+        self.queue(1, 'after-recovery')
+        self.assertEqual(restarted.run_once(allow_new=False), {'outcome': 'idle'})
+        self.assertEqual(self.calls, ['pre-prompt fixture'])

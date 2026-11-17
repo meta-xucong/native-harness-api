@@ -15,6 +15,9 @@ from native_harness_api.beta15_session import decode_frame
 from native_harness_api.public_sfe_owned_session import PublicSfeOwnedSession
 from native_harness_api.supervised_acp_transport import SupervisedACPTransport
 from native_harness_api.public_sfe_session import keys, meta
+from native_harness_api.workbuddy_node_assets import ADAPTER_ID, NODE_RELEASES, PIPE_ADAPTER_ID
+from native_harness_api.workbuddy_node_session import WorkBuddyNodeSession
+from public_harness_runtime_assets import workbuddy_command
 
 RETAINED = []
 EXPLAIN = ('Reads the native model choices for an already confirmed retained CN WorkBuddy profile. '
@@ -71,8 +74,16 @@ def project_models(options):
 
 
 class ModelsOwnedSession(PublicSfeOwnedSession):
-    def __init__(self, transport):
-        super().__init__(transport); self.catalog = None
+    def __init__(self, transport, *, node_runtime=False, product_version='5.9.3'):
+        super().__init__(transport)
+        self.catalog = None
+        self.node_runtime = node_runtime
+        self.product_version = product_version
+
+    def _make_protocol(self, **kwargs):
+        if self.node_runtime:
+            return WorkBuddyNodeSession(product_version=self.product_version, **kwargs)
+        return super()._make_protocol(**kwargs)
 
     def _stages(self, workspace, _model_id, _prompt):
         return [(self.protocol.start, lambda: self.protocol.ready),
@@ -87,7 +98,10 @@ class ModelsOwnedSession(PublicSfeOwnedSession):
                 if entry is not None and entry[0] == 'session/new' and 'result' in value:
                     candidate = value['result'].get('configOptions')
                 # A changing catalog is not a reusable model-selection result.
-                if value.get('method') == 'session/update':
+                update = value.get('params', {}).get('update', {})
+                commands_only = (self.node_runtime and isinstance(update, dict)
+                                 and update.get('sessionUpdate') == 'available_commands_update')
+                if value.get('method') == 'session/update' and not commands_only:
                     self._fail('CATALOG_CHANGED')
             super()._dispatch(raw)
             if candidate is not None and not self.fault and not self.protocol.failure_code:
@@ -113,7 +127,9 @@ class ModelsOwnedSession(PublicSfeOwnedSession):
 
 def discover_models(assets, profile, *, transport=None, timeout=60, cleanup_timeout=10):
     """Caller holds the profile lock; returns local-only catalog, never persists model choice."""
-    engine = ModelsOwnedSession(transport or SupervisedACPTransport())
+    node_runtime = assets.get('adapter_id') in NODE_RELEASES
+    engine = ModelsOwnedSession(transport or SupervisedACPTransport(), node_runtime=node_runtime,
+                                product_version=assets['product_version'] if node_runtime else '5.9.3')
     result = {'schema_version':1,'success':False,'catalog':None,'cleanup_confirmed':False,
               'profile_closed':False,'profile_restored':False,'prompt_sent':False,'model_selected':False,'real_model_ready':False}
     began = False
@@ -123,8 +139,9 @@ def discover_models(assets, profile, *, transport=None, timeout=60, cleanup_time
         profile.begin_execution(); began = True
         workspace = profile.root / 'workspace' / ('catalog-' + uuid.uuid4().hex)
         workspace.mkdir(); require(profile.verify() is True)
-        env = profile.environment(assets['host_node'])
-        command = [str(assets['executable']), '--stdio', '--strict-mcp-config', '--product-config', str(assets['product_config'])]
+        env = (profile.environment(assets['host_node'], node_runtime=True) if node_runtime
+               else profile.environment(assets['host_node']))
+        command = workbuddy_command(assets)
         result.update(engine.discover(command,workspace,env,workspace=str(workspace),expected_account_digest=digest,
                                      timeout=timeout,cleanup_timeout=cleanup_timeout))
         require(result['success'] and result['cleanup_confirmed'] and profile.verify() is True)
@@ -150,13 +167,14 @@ def discover_models(assets, profile, *, transport=None, timeout=60, cleanup_time
     return result
 
 
-def export_target(result, *, profile_root, profile_id, account_fingerprint, assets_root, native_model, public_alias):
+def export_target(result, *, profile_root, profile_id, account_fingerprint, assets_root, native_model, public_alias,
+                  adapter_id='workbuddy.public-sfe.v1'):
     """Export a local recipe only after this discovery restored/closed its profile."""
     require(result.get('success') is True and result.get('cleanup_confirmed') is True
             and result.get('profile_restored') is True and result.get('profile_closed') is True)
     require(native_model in {model['id'] for model in result['catalog']['models']})
     from native_harness_api.harness_registry import make_recipe, binding_for, profile_path
-    recipe = make_recipe(adapter_id='workbuddy.public-sfe.v1', profile_path=str(profile_root),
+    recipe = make_recipe(adapter_id=adapter_id, profile_path=str(profile_root),
         profile_id=profile_id, account_fingerprint=account_fingerprint,
         native_model=native_model, public_alias=public_alias)
     return {'recipe': recipe, 'binding': binding_for(recipe).wire(), 'assets_root': profile_path(str(assets_root))}
@@ -173,13 +191,15 @@ class SafeParser(argparse.ArgumentParser):
     def error(self, message): raise ValueError('ARGUMENTS_REJECTED')
 
 
-def main(argv=None):
+def main(argv=None, *, node_runtime=False):
     parser = SafeParser(description=__doc__)
     parser.add_argument('--assets-root',type=Path)
     parser.add_argument('--profile',type=Path)
     parser.add_argument('--explain',action='store_true')
     parser.add_argument('--target-model')
     parser.add_argument('--public-alias')
+    if node_runtime:
+        parser.add_argument('--named-pipe', action='store_true')
     exporting = False
     try:
         args = parser.parse_args(argv)
@@ -188,9 +208,13 @@ def main(argv=None):
         if args.explain: print(EXPLAIN); return 0
         require(os.name == 'nt' and sys.stdin.isatty() and sys.stdout.isatty() and sys.stderr.isatty())
         require(args.assets_root is not None and args.profile is not None)
-        from public_harness_runtime_assets import verify_runtime_assets
+        from public_harness_runtime_assets import verify_runtime_assets, verify_node_runtime_assets
         from public_harness_login_profile import open_profile
-        assets = verify_runtime_assets(args.assets_root)
+        if node_runtime:
+            adapter = PIPE_ADAPTER_ID if args.named_pipe else ADAPTER_ID
+            assets = verify_node_runtime_assets(args.assets_root, adapter_id=adapter)
+        else:
+            assets = verify_runtime_assets(args.assets_root)
         profile = open_profile(args.profile)
         frozen_identity = (profile.root, profile.root.name, profile.expected_account_digest) if exporting else None
         print(EXPLAIN, file=sys.stderr if exporting else sys.stdout)
@@ -198,7 +222,8 @@ def main(argv=None):
         if exporting and result['success']:
             root, identity, fingerprint = frozen_identity
             value = export_target(result, profile_root=root, profile_id=identity, account_fingerprint=fingerprint,
-                assets_root=args.assets_root, native_model=args.target_model, public_alias=args.public_alias)
+                assets_root=args.assets_root, native_model=args.target_model, public_alias=args.public_alias,
+                **({'adapter_id': assets['adapter_id']} if node_runtime else {}))
             print(json.dumps(value, ensure_ascii=False, indent=2))
         elif result['success']:
             print('Retained profile: ' + ascii(str(profile.root)))

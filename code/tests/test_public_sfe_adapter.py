@@ -1,17 +1,28 @@
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
+import json
 from pathlib import Path
 import sqlite3
 import tempfile
 import unittest
 from native_harness_api.contracts import Binding, digest
-from native_harness_api.public_sfe_adapter import PublicSfeAdapter, project_result
+from native_harness_api.public_sfe_adapter import PENDING, PublicSfeAdapter, project_result, project_workbuddy_node_result
 B=Binding('wb',1,'wb-model','native-model');G={'start_grant_id':'g1'}
 def task():
  r={'model':'wb-model','messages':[{'role':'user','content':'hello'}],'stream':False,'n':1}
  return {'remote_task_id':'t1','identity':{'source':'s','tenant':'u','principal':'k','operation':'o'},'ledger_instance':'l','request_digest':digest(r),'request':{'binding':B.wire(),'client_request':r,'messages':r['messages']}}
 def success():
  return {'outcome':'succeeded','fault':None,'session':{'outcome':'succeeded','fault':None,'model_confirmed':True,'protocol_ready':True,'account_verified':True,'turn':{'outcome':'succeeded','fault':None,'insert_acknowledged':True,'terminal_observed':True,'terminal_reason':'end_turn','text':'answer'}},'cleanup_confirmed':True,'natural_exit_zero':True,'cleanup':{k:True for k in ('host_exited','owned_job_empty','handles_closed','cleanup_complete','io_threads_stopped')}}
+
+
+def pre_prompt_timeout():
+    value = success()
+    value.update(outcome='indeterminate', fault='TURN_NOT_COMPLETED', launch_attempted=True,
+                 session={'prompt_intent_issued': False, 'turn': None,
+                          'session_new_intent_issued': False, 'session_close_acknowledged': False})
+    return value
+
+
 class AdapterTests(unittest.TestCase):
  def setUp(self):self.tmp=tempfile.TemporaryDirectory();self.root=Path(self.tmp.name).resolve();self.calls=0
  def tearDown(self):self.tmp.cleanup()
@@ -48,6 +59,38 @@ class AdapterTests(unittest.TestCase):
  def test_raw_evidence_not_saved(self):
   def invoke(**kw):v=success();v['private']='credential';return v
   a=self.adapter(invoke);a.start(task(),G);self.assertNotIn(b'credential',a.db.read_bytes())
+ def test_failure_diagnostic_is_persisted_separately_and_recover_does_not_retry(self):
+  def invoke(**kw):
+   self.calls += 1
+   return {'fault': 'TURN_NOT_COMPLETED', 'session': {'first_failed_frame': {
+       'kind': 'rpc_error', 'method': 'session/prompt', 'rpc_error_code': -32603,
+       'message': 'private credential', 'data': {'id': 'private native id'}}}}
+  a = self.adapter(invoke)
+  with closing(sqlite3.connect(a.db)) as db:
+   db.execute('INSERT INTO evidence VALUES(?,?,?,?)', ('oldg', 'oldt', 'oldhash', '{"old":"result"}'))
+   db.commit()
+  self.assertEqual(a.start(task(), G), PENDING)
+  self.assertEqual(self.adapter().reconcile(task(), G), PENDING)
+  self.assertEqual(self.adapter().start(task(), G), PENDING)
+  self.assertEqual(self.calls, 1)
+  with closing(sqlite3.connect(a.db)) as db:
+   grant, first = db.execute('SELECT grant_id,first_failed_frame FROM protocol_diagnostics').fetchone()
+   self.assertEqual(grant, G['start_grant_id'])
+   self.assertEqual(json.loads(first), {'kind': 'rpc_error', 'method': 'session/prompt', 'rpc_error_code': -32603})
+   self.assertEqual(db.execute('SELECT result FROM evidence WHERE grant_id=?', ('oldg',)).fetchone(),
+                    ('{"old":"result"}',))
+  self.assertNotIn(b'private', a.db.read_bytes())
+ def test_outer_failure_is_saved_without_payload(self):
+  def invoke(**kw):
+   return {'fault': 'TURN_NOT_COMPLETED', 'session': {'first_failed_frame': {
+       'kind': 'invalid_jsonrpc_version', 'method': 'PRIVATE', 'version': 'PRIVATE', 'raw': 'PRIVATE'}}}
+  a = self.adapter(invoke)
+  self.assertEqual(a.start(task(), G), PENDING)
+  with closing(sqlite3.connect(a.db)) as db:
+   grant, first = db.execute('SELECT grant_id,first_failed_frame FROM protocol_diagnostics').fetchone()
+   self.assertEqual(grant, G['start_grant_id'])
+   self.assertEqual(json.loads(first), {'kind': 'invalid_jsonrpc_version'})
+  self.assertNotIn(b'PRIVATE', a.db.read_bytes())
  def test_pending_matrix(self):
   for path in [('cleanup_confirmed',),('natural_exit_zero',),('session','model_confirmed'),('session','protocol_ready'),('session','account_verified'),('session','turn','insert_acknowledged'),('session','turn','terminal_observed'),('cleanup','handles_closed'),('cleanup','io_threads_stopped')]:
    for bad in (False,1,'true',None):
@@ -93,3 +136,19 @@ class AdapterTests(unittest.TestCase):
   with closing(sqlite3.connect(outside)) as db:self.assertEqual(db.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall(),[('sentinel',)])
  def test_failure_code(self):
   v=success();v['session']['failure_code']='protocol';self.assertEqual(project_result(v,'m')['outcome'],'pending')
+
+ def test_pre_prompt_abort_requires_full_owned_evidence(self):
+  proof = pre_prompt_timeout()
+  self.assertEqual(project_workbuddy_node_result(proof, 'native-model')['code'], 'PRE_PROMPT_ABORTED')
+  self.assertEqual(project_result(proof, 'native-model'), PENDING)
+  for container, field, value in (
+      ('session', 'prompt_intent_issued', True), ('session', 'prompt_intent_issued', 0),
+      ('session', 'turn', {}), ('session', 'session_new_intent_issued', True),
+      ('session', 'session_new_intent_issued', None), ('cleanup', 'owned_job_empty', False),
+      (None, 'launch_attempted', False), (None, 'natural_exit_zero', False),
+      (None, 'cleanup', None)):
+   with self.subTest(field=field, value=value):
+    malformed = pre_prompt_timeout()
+    target = malformed if container is None else malformed[container]
+    target[field] = value
+    self.assertEqual(project_workbuddy_node_result(malformed, 'native-model'), PENDING)

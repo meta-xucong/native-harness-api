@@ -163,7 +163,11 @@ class HTTPIntegrationTests(unittest.TestCase):
 
     def test_unknown_then_permission_revoked_cannot_create_new(self):
         # The route was bound, but transport did not reach Facade.
-        self.routes["a"]["url"] = "http://127.0.0.1:1"
+        import socket
+        unreachable = socket.socket()
+        unreachable.bind(("127.0.0.1", 0))
+        self.addCleanup(unreachable.close)
+        self.routes["a"]["url"] = f"http://127.0.0.1:{unreachable.getsockname()[1]}"
         self.expect("BRIDGE_TRANSPORT_UNCERTAIN", self.send)
         self.gateway.allow_new = False
         self.expect("BRIDGE_TRANSPORT_UNCERTAIN", self.send)

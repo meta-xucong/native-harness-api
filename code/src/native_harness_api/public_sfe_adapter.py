@@ -12,9 +12,30 @@ import sqlite3
 import stat
 
 from .native_live_events import LiveEventPump
-from .contracts import Binding, MAX_RESULT_BYTES, canonical, digest, identifier, normalize_request
+from .contracts import Binding, MAX_RESULT_BYTES, canonical, digest, identifier, normalize_request, pre_prompt_abort_result
+from .public_sfe_session import safe_failed_frame
 
 PENDING = {'outcome': 'pending', 'liveness': 'unknown', 'code': 'EXECUTION_UNCERTAIN'}
+
+
+def _owned_cleanup_confirmed(value):
+    cleanup = value.get('cleanup')
+    return (value.get('cleanup_confirmed') is True and value.get('natural_exit_zero') is True
+            and type(cleanup) is dict and all(cleanup.get(key) is True for key in
+                ('host_exited', 'owned_job_empty', 'handles_closed', 'cleanup_complete', 'io_threads_stopped')))
+
+
+def project_workbuddy_node_result(value, model):
+    """Project a known pre-prompt stop from this owned invocation's full evidence."""
+    if (type(value) is dict and value.get('fault') == 'TURN_NOT_COMPLETED'
+            and value.get('launch_attempted') is True and _owned_cleanup_confirmed(value)):
+        session = value.get('session')
+        if (type(session) is dict and session.get('prompt_intent_issued') is False
+                and 'turn' in session and session['turn'] is None):
+            opened = session.get('session_new_intent_issued')
+            if type(opened) is bool and session.get('session_close_acknowledged') is opened:
+                return pre_prompt_abort_result(opened)
+    return project_result(value, model)
 
 
 def project_result(value, model):
@@ -35,10 +56,7 @@ def project_result(value, model):
     if (type(outcome) is not str or outcome not in reasons or turn.get('terminal_reason') not in reasons[outcome]
             or value.get('outcome') != outcome or session.get('outcome') != outcome):
         return dict(PENDING)
-    cleanup = value.get('cleanup')
-    if (value.get('cleanup_confirmed') is not True or value.get('natural_exit_zero') is not True or
-            type(cleanup) is not dict or any(cleanup.get(k) is not True for k in
-                ('host_exited', 'owned_job_empty', 'handles_closed', 'cleanup_complete', 'io_threads_stopped'))):
+    if not _owned_cleanup_confirmed(value):
         return dict(PENDING)
     content = turn.get('text')
     if type(content) is not str:
@@ -137,6 +155,7 @@ class DurableNativeAdapter:
         # Committed intent survives every exception, interruption or process loss.
         # No exception message or raw vendor evidence is persisted or forwarded.
         pump = None
+        diagnostic = None
         try:
             if publish_event is not None:
                 pump = LiveEventPump(publish_event, horizon=self.event_horizon)
@@ -144,6 +163,9 @@ class DurableNativeAdapter:
             model = task['request']['binding']['native_model']
             options = {} if pump is None else {'on_event': pump.enqueue, 'cancellation': pump.failed}
             evidence = invoke(model_id=model, messages=request['messages'], **options)
+            session = evidence.get('session') if type(evidence) is dict else None
+            if type(session) is dict:
+                diagnostic = safe_failed_frame(session.get('first_failed_frame'))
             result = projector(evidence, model)
         except Exception:
             result = dict(PENDING)
@@ -153,7 +175,13 @@ class DurableNativeAdapter:
             if not pump.thread.is_alive():
                 self._retained_event_pumps.remove(pump)
         with self._connect() as con:
-            con.execute('UPDATE evidence SET result=? WHERE grant_id=? AND result IS NULL', (canonical(result), grant_id))
+            updated = con.execute('UPDATE evidence SET result=? WHERE grant_id=? AND result IS NULL',
+                                  (canonical(result), grant_id))
+            if diagnostic is not None and updated.rowcount:
+                # Local-only and additive. Old result rows and reconciliation stay unchanged.
+                con.execute('CREATE TABLE IF NOT EXISTS protocol_diagnostics '
+                            '(grant_id TEXT PRIMARY KEY, first_failed_frame TEXT NOT NULL)')
+                con.execute('INSERT INTO protocol_diagnostics VALUES(?,?)', (grant_id, canonical(diagnostic)))
         return result
 
     def reconcile(self, task, grant):

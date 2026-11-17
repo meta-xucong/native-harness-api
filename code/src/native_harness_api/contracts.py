@@ -161,6 +161,19 @@ def checked_task(task, identity, request_digest, ledger_instance):
     return task
 
 
+PRE_PROMPT_ABORTED = 'PRE_PROMPT_ABORTED'
+
+
+def pre_prompt_abort_result(session_opened):
+    if type(session_opened) is not bool:
+        raise ValueError('Explicit WorkBuddy session closure evidence required')
+    return {'outcome': 'failed', 'liveness': 'stopped_confirmed', 'code': PRE_PROMPT_ABORTED,
+            'output_blocks': [], 'usage': {'state': 'unknown'},
+            'pre_prompt_abort': {'prompt_intent_issued': False, 'owned_cleanup_confirmed': True,
+                                 'session_new_intent_issued': session_opened,
+                                 'session_close_acknowledged': session_opened}}
+
+
 def completion(task):
     result = task.get("result")
     if task.get("result_expired"):

@@ -49,12 +49,14 @@ class LoginTests(unittest.TestCase):
         return p.receive(reply(7,{'authenticated':authenticated}))
 
     def test_baseline_intent_and_existing_account(self):
+        init=json.loads(LoginProtocol().start()[0][0])
+        self.assertNotIn('config',init['params']['capabilities'])
         p=self.baseline();self.assertEqual(p.state,'awaiting_intent');self.assertFalse(p.summary()['login_sent'])
         p.intent();self.assertEqual(p.state,'failed')
         p=self.baseline(True);self.assertEqual(p.state,'existing_account');p.intent(True);self.assertFalse(p.login_sent)
 
     def test_ack_not_ready_private_identity_separate(self):
-        p=self.login();p.receive(reply(5,{}));self.assertTrue(p.summary()['login_ack']);self.assertFalse(p.summary()['native_account_verified'])
+        p=self.login();p.receive(reply(5,{}));self.assertTrue(p.summary()['login_ack']);self.assertIsNone(p.summary()['login_error_code']);self.assertFalse(p.summary()['native_account_verified'])
         _,events=p.receive(reply(6,account(True)));self.assertEqual(events,())
         _,events=p.receive(reply(7,{'authenticated':True}));self.assertEqual(events[0]['kind'],'account_identity');self.assertEqual(len(events[0]['digest']),64);self.assertEqual(p.state,'awaiting_identity')
         self.assertNotIn('SYNTHETIC_ACCOUNT',json.dumps(p.summary()));p.confirm_identity(True)
@@ -66,6 +68,89 @@ class LoginTests(unittest.TestCase):
         w,e=p.elicitation_reply(True);self.assertEqual(json.loads(w[0])['result'],{'action':'accept'})
         p.receive(notify('elicitation/complete',{'elicitationId':'synthetic-elicitation'}));self.settle(p,False)
         self.assertEqual(p.state,'not_authenticated')
+
+    def test_url_handoff_echoes_bounded_string_request_id_without_exposing_it(self):
+        request_id='synthetic-form-1'
+        p=self.login();w,e=p.receive(url_request(request_id));self.assertEqual(w,());self.assertEqual(e[0]['kind'],'url_handoff')
+        self.assertNotIn(request_id,json.dumps(p.summary()))
+        w,_=p.elicitation_reply(True)
+        self.assertEqual(json.loads(w[0]),{'jsonrpc':'2.0','id':request_id,'result':{'action':'accept'}})
+        self.assertLessEqual(len(w[0]),2048)
+
+    def test_unicode_request_id_must_fit_the_outbound_frame_limit(self):
+        request_id='😀'*256
+        value=json.loads(url_request());value['id']=request_id
+        incoming=json.dumps(value,ensure_ascii=False).encode()
+        self.assertLessEqual(len(incoming),2048)
+        p=self.login();p.receive(incoming)
+        self.assertEqual(p.summary()['failure_code'],'unexpected_request')
+        self.assertEqual(p.summary()['failure_detail'],'request_id')
+        self.assertEqual(p.summary()['elicitation_count'],0)
+        self.assertNotIn(request_id,json.dumps(p.summary()))
+
+    def test_reverse_request_rejection_diagnostics_are_safe_and_specific(self):
+        for request_id in (None, True, 1.5, [], {}, 'x'*257, 'bad\nrequest-id'):
+            with self.subTest(id_type=type(request_id).__name__):
+                p=self.login();value=json.loads(url_request());value['id']=request_id
+                p.receive(frame(value))
+                self.assertEqual(p.summary()['failure_code'],'unexpected_request')
+                self.assertEqual(p.summary()['failure_detail'],'request_id')
+                self.assertNotIn(str(request_id),json.dumps(p.summary()))
+        p=self.login();p.receive(url_request('reused-id'));p.receive(url_request('reused-id'))
+        self.assertEqual(p.summary()['failure_detail'],'duplicate_request_id')
+        p=self.login();p.receive(frame({'jsonrpc':'2.0','id':'opaque-id','method':'unknown/method','params':{}}))
+        self.assertEqual(p.summary()['failure_detail'],'request_method')
+        self.assertNotIn('unknown/method',json.dumps(p.summary()))
+        p=self.baseline();p.receive(url_request('early-id'))
+        self.assertEqual(p.summary()['failure_detail'],'request_phase')
+
+    def test_unknown_notifications_fail_closed_with_static_safe_details(self):
+        cases = (
+            (frame({'jsonrpc':'2.0','method':'vendor/private-auth-state','params':{'token':'PRIVATE_TOKEN'}}),
+             'notification_method'),
+            (notify('auth/private-state', {'token':'PRIVATE_TOKEN'}), 'notification_auth'),
+            (notify('account/private-state', {'accountId':'PRIVATE_ACCOUNT'}), 'notification_account'),
+            (notify('product/private-state', {'generation':1}), 'notification_product'),
+            (notify('session/private-state', {'sessionId':'PRIVATE_SESSION'}), 'notification_session'),
+            (notify('elicitation/private-state', {'elicitationId':'PRIVATE_ELICITATION'}), 'notification_elicitation'),
+            (frame({'jsonrpc':'2.0','method':'account/updated','params':{'state':'authenticated','account':{'id':'SYNTHETIC','token':'PRIVATE_TOKEN'}}}),
+             'account_update'),
+            (notify('elicitation/complete',{'elicitationId':'PRIVATE_ELICITATION'}),
+             'elicitation_complete'),
+        )
+        for payload, detail in cases:
+            with self.subTest(detail=detail):
+                p=self.login();p.receive(payload)
+                self.assertEqual(p.summary()['failure_code'],'unexpected_notification')
+                self.assertEqual(p.summary()['failure_detail'],detail)
+                self.assertNotIn('vendor/private-auth-state',json.dumps(p.summary()))
+                self.assertNotIn('private-state',json.dumps(p.summary()))
+                self.assertNotIn('PRIVATE_TOKEN',json.dumps(p.summary()))
+                self.assertNotIn('PRIVATE_ACCOUNT',json.dumps(p.summary()))
+                self.assertNotIn('PRIVATE_SESSION',json.dumps(p.summary()))
+                self.assertNotIn('PRIVATE_ELICITATION',json.dumps(p.summary()))
+
+    def test_jsonrpc_control_notifications_do_not_abort_login_or_prove_auth(self):
+        for method, params in (
+                ('$/cancel_request', {'requestId':'unrelated'}),
+                ('$/private-control', {'token':'PRIVATE_TOKEN'})):
+            with self.subTest(method_class='jsonrpc_control'):
+                p=self.login();p.receive(url_request())
+                wires,events=p.receive(notify(method,params))
+                self.assertEqual(wires,())
+                self.assertEqual(events,())
+                self.assertFalse(p.done)
+                self.assertEqual(p.state,'login_pending')
+                self.assertEqual(p.next_action,'confirm_url_handoff')
+                self.assertFalse(p.summary()['account_read_verified'])
+                self.assertFalse(p.summary()['auth_status_verified'])
+                self.assertNotIn(method,json.dumps(p.summary()))
+                self.assertNotIn('PRIVATE_TOKEN',json.dumps(p.summary()))
+                w,_=p.elicitation_reply(True)
+                self.assertEqual(json.loads(w[0]),{'jsonrpc':'2.0','id':80,'result':{'action':'accept'}})
+                _,events=self.settle(p,True)
+                self.assertEqual(p.next_action,'confirm_account_identity')
+                self.assertEqual(events[0]['kind'],'account_identity')
 
     def test_login_error_denies_outstanding_url_then_reconciles(self):
         for authenticated in (False, True):
@@ -79,16 +164,17 @@ class LoginTests(unittest.TestCase):
             p.receive(notify('elicitation/complete',{'elicitationId':'synthetic-elicitation'}))
             p.receive(reply(6,account(authenticated)))
             _,events=p.receive(reply(7,{'authenticated':authenticated}))
-            self.assertEqual(p.next_action,'confirm_account_identity' if authenticated else 'close')
+            self.assertEqual(p.next_action,'confirm_account_identity' if authenticated else 'wait')
             self.assertEqual(bool(events),authenticated)
             self.assertFalse(p.summary()['login_ack']);self.assertFalse(p.summary()['native_account_verified'])
+            self.assertEqual(p.summary()['login_error_code'],-32800)
             self.assertNotIn('PRIVATE_ERROR',json.dumps(p.summary()))
 
     def test_cancel_notification_not_settlement(self):
         p=self.login();w,_=p.cancel(timeout=True);self.assertEqual(json.loads(w[0])['params'],{'requestId':5})
         self.assertFalse(p.done);self.assertFalse(p.summary()['login_settled']);self.assertEqual(p.cancel()[0],())
         p.receive(frame({'jsonrpc':'2.0','id':5,'error':{'code':-32800,'message':'PRIVATE_ERROR'}}))
-        p.receive(reply(6,account(False)));p.receive(reply(7,{'authenticated':False}));self.assertEqual(p.state,'cancelled')
+        p.receive(reply(6,account(False)));p.receive(reply(7,{'authenticated':False}));self.assertEqual(p.state,'unknown')
         self.assertNotIn('PRIVATE_ERROR',json.dumps(p.summary()))
 
     def test_cancel_late_commit_not_ready(self):
@@ -132,5 +218,46 @@ class LoginTests(unittest.TestCase):
         p=self.baseline();w,_=p.intent(True);self.assertEqual(len(w),1);p.intent(True);self.assertEqual(p.state,'unknown')
         p=self.login();p.receive(frame({'jsonrpc':'2.0','id':80,'method':'session/request_permission','params':{}}));self.assertEqual(p.state,'unknown')
         self.assertFalse(p.summary()['real_model_ready'])
+
+    def test_native_browser_completion_before_terminal_answer(self):
+        # Pinned beta16 awaitManagedLogin finally cancels its URL request and
+        # notifies completion before login returns; it does not await TTY yes.
+        for cancel_first in (False, True):
+            p=self.login();p.receive(url_request('native-ui'))
+            if cancel_first:
+                w,_=p.receive(notify('$/cancel_request',{'requestId':'native-ui'}))
+                self.assertEqual(json.loads(w[0])['result'],{'action':'cancel'})
+            p.receive(notify('elicitation/complete',{'elicitationId':'synthetic-elicitation'}))
+            self.assertIsNone(p.pending_elicitation);self.assertFalse(p.cancelled)
+            self.assertFalse(p.summary()['native_account_verified'])
+            self.settle(p,True);self.assertEqual(p.state,'awaiting_identity')
+            p.confirm_identity(True);self.assertTrue(p.summary()['native_account_verified'])
+
+    def test_error_background_reconciliation_is_same_login(self):
+        p=self.login()
+        p.receive(frame({'jsonrpc':'2.0','id':5,'error':{'code':-32603,'message':'Internal error'}}))
+        p.receive(reply(6,account(False)));p.receive(reply(7,{'authenticated':False}))
+        self.assertFalse(p.done);self.assertEqual(p.state,'reconciliation_wait')
+        wires,_=p.reconcile();self.assertEqual(json.loads(wires[0])['method'],'account/read')
+        p.receive(reply(6,account(False)))
+        p.receive(notify('account/updated',account(True)))
+        p.receive(reply(7,{'authenticated':True}))
+        self.assertEqual(p.state,'reconciliation_wait');self.assertIsNone(p._identity_event)
+        p.reconcile();p.receive(reply(6,account(True)))
+        _,events=p.receive(reply(7,{'authenticated':True}))
+        self.assertEqual(p.state,'awaiting_identity');self.assertEqual(len(events),1)
+        self.assertFalse(p.summary()['login_ack']);p.confirm_identity(True)
+        self.assertTrue(p.summary()['native_account_verified'])
+
+    def test_failed_login_observation_is_bounded_and_never_proves_unauthenticated(self):
+        p=self.login()
+        p.receive(frame({'jsonrpc':'2.0','id':5,'error':{'code':-32603,'message':'Internal error'}}))
+        for _ in range(15):
+            p.receive(reply(6,account(False)));p.receive(reply(7,{'authenticated':False}))
+            p.reconcile()
+        self.assertEqual(p.state,'unknown')
+        self.assertEqual(p.summary()['failure_code'],'login_reconciliation_unknown')
+        self.assertLessEqual(p.summary()['frames_received'],64)
+        self.assertEqual(p.summary()['reconciliation_reads'],15)
 
 if __name__=='__main__':unittest.main()

@@ -551,13 +551,18 @@ class WindowsJobTests(unittest.TestCase):
         self.assertTrue(owner.close()['owned_job_empty'])
 
     def test_repeated_spawn_close_does_not_leak_handles(self):
+        import gc
         from native_harness_api.windows_job import HANDLE, DWORD, BOOL
         kernel=ctypes.WinDLL('kernel32',use_last_error=True)
         current=kernel.GetCurrentProcess;current.restype=HANDLE;current.argtypes=[]
         count=kernel.GetProcessHandleCount;count.restype=BOOL;count.argtypes=[HANDLE,ctypes.POINTER(DWORD)]
+        # The first tracker start lazily initializes per-process Win32/Python state.
+        warmup=self.spawn('marker');self.assertTrue(warmup.wait_empty(5)['owned_job_empty']);warmup.close()
         before=DWORD();self.assertTrue(count(current(),ctypes.byref(before)))
         for _ in range(10):
             owner=self.spawn('marker');self.assertTrue(owner.wait_empty(5)['owned_job_empty']);owner.close()
+        # Closed wrappers retain their synchronization objects until discarded.
+        self.owners.clear();gc.collect()
         after=DWORD();self.assertTrue(count(current(),ctypes.byref(after)))
         self.assertLessEqual(after.value,before.value+2)
 

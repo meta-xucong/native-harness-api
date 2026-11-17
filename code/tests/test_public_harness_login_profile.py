@@ -80,6 +80,28 @@ class ProfileFixtureTests(unittest.TestCase):
                 profile.record('authenticated_confirmed', 'b' * 64)
         self.assertTrue(root.exists())
 
+    def test_recovery_preserves_origin_pins_and_cannot_be_resumed_after_owner_loss(self):
+        with storage.create_profile(self.parent) as profile:
+            root = profile.root
+            profile.record('login_started')
+            profile.record('unknown_retained')
+            original = json.loads((root / storage.MANIFEST).read_text())
+            profile.begin_recovery()
+            profile.finish_recovery('a' * 64)
+            expected = dict(original, state='authenticated_confirmed', confirmed_account_digest='a' * 64)
+            self.assertEqual(json.loads((root / storage.MANIFEST).read_text()), expected)
+        with storage.create_profile(self.parent) as profile:
+            root = profile.root
+            profile.record('login_started')
+            profile.record('unknown_retained')
+            profile.begin_recovery()
+        with storage.open_profile(root) as reopened:
+            self.assertEqual(reopened.state, 'recovery_started')
+            with self.assertRaises(storage.ProfileError):
+                reopened.begin_recovery()
+            with self.assertRaises(storage.ProfileError):
+                reopened.finish_recovery('a' * 64)
+
     def test_bad_digest_and_manifest_claims_are_rejected(self):
         with storage.create_profile(self.parent) as profile:
             profile.record('login_started')
@@ -106,6 +128,170 @@ class ProfileFixtureTests(unittest.TestCase):
             with patch.object(Path, 'open', spy):
                 self.assertTrue(profile.verify())
             self.assertNotIn(opaque, opened)
+
+    def test_workbuddy_app_data_accepts_only_scoped_appcontainer_and_leveldb_acls(self):
+        sid = FakeSecurity.sid
+        capability = storage.WORKBUDDY_APP_CAPABILITY_SID
+        root_entries = [
+            (0, 0, 0x1301bf, capability), (0, 0x0b, 0xe0010000, capability),
+            (0, 0x13, 0x1f01ff, 'S-1-5-18'), (0, 0x13, 0x1f01ff, sid),
+        ]
+        child_directory = [
+            (0, 0x10, 0x1301bf, capability), (0, 0x1b, 0xe0010000, capability),
+            (0, 0x13, 0x1f01ff, 'S-1-5-18'), (0, 0x13, 0x1f01ff, sid),
+        ]
+        child_file = [
+            (0, 0x10, 0x1301bf, capability),
+            (0, 0x10, 0x1f01ff, 'S-1-5-18'), (0, 0x10, 0x1f01ff, sid),
+        ]
+        self.assertTrue(storage._check_workbuddy_appcontainer_aces(sid, sid, True, True, root_entries))
+        self.assertTrue(storage._check_workbuddy_appcontainer_aces(sid, sid, True, False, child_directory))
+        self.assertTrue(storage._check_workbuddy_appcontainer_aces(sid, sid, False, False, child_file))
+        bad_type = list(root_entries); bad_type[0] = (1, *bad_type[0][1:])
+        for changed in (root_entries + [(0, 0, 0x1f01ff, 'S-1-1-0')],
+                        [*root_entries[:1], (0, 0x0b, 0x1f01ff, capability), *root_entries[2:]],
+                        bad_type):
+            with self.assertRaises(storage.ProfileError):
+                storage._check_workbuddy_appcontainer_aces(sid, sid, True, True, changed)
+        with self.assertRaises(storage.ProfileError):
+            storage._check_workbuddy_appcontainer_aces('S-1-5-21-999', sid, True, True, root_entries)
+        with self.assertRaises(storage.ProfileError):
+            storage._check_workbuddy_appcontainer_aces(sid, sid, True, True,
+                    [(kind, flags, mask, 'S-1-15-3-1024-123-456' if trustee == capability else trustee)
+                     for kind, flags, mask, trustee in root_entries])
+        leveldb = [(1, 0, 0x20, 'S-1-1-0'), (0, 0x10, 0x1f01ff, 'S-1-5-18'),
+                   (0, 0x10, 0x1f01ff, sid)]
+        self.assertTrue(storage._check_workbuddy_leveldb_aces(sid, sid, leveldb))
+        with self.assertRaises(storage.ProfileError):
+            storage._check_workbuddy_leveldb_aces(sid, sid,
+                    [*leveldb[:1], (1, 0, 0x1f01ff, 'S-1-1-0'), *leveldb[2:]])
+        with self.assertRaises(storage.ProfileError):
+            storage._check_workbuddy_leveldb_aces(sid, sid, leveldb[1:] + leveldb[:1])
+        junction = [(1, 0, 0x1, 'S-1-1-0'), (0, 3, 0x1f01ff, 'S-1-5-18'),
+                    (0, 3, 0x1f01ff, sid)]
+        self.assertTrue(storage._check_inetcache_compat_aces(sid, sid, junction))
+        with self.assertRaises(storage.ProfileError):
+            storage._check_inetcache_compat_aces(sid, sid, junction[1:] + junction[:1])
+
+    def test_workbuddy_acl_exception_stays_inside_exact_app_data_subtrees(self):
+        root = self.parent / ('workbuddy-managed-' + '0' * 32)
+        data_root = storage._workbuddy_app_data_root(root)
+        self.assertTrue(storage._is_workbuddy_app_data_path(data_root, root))
+        app_cache = data_root / 'Default' / 'Cache'
+        self.assertTrue(storage._is_workbuddy_app_data_path(app_cache / 'entry', root))
+        self.assertFalse(storage._is_workbuddy_app_data_path(data_root.with_name('User Data Copy'), root))
+        self.assertFalse(storage._is_workbuddy_app_data_path(root / 'config' / 'entry', root))
+        self.assertTrue(storage._is_workbuddy_appcontainer_root(app_cache, data_root))
+        self.assertFalse(storage._is_workbuddy_appcontainer_root(app_cache / 'child', data_root))
+        self.assertTrue(storage._is_workbuddy_appcontainer_path(app_cache / 'child', data_root))
+        self.assertFalse(storage._is_workbuddy_appcontainer_path(data_root / 'Default' / 'Cookies', data_root))
+        self.assertFalse(storage._is_workbuddy_appcontainer_path(
+                data_root / 'Default' / 'Local Storage' / 'leveldb' / 'LOG', data_root))
+        self.assertTrue(storage._is_workbuddy_leveldb_file(
+                data_root / 'Default' / 'Local Storage' / 'leveldb' / 'LOG', data_root, False))
+        self.assertFalse(storage._is_workbuddy_leveldb_file(
+                data_root / 'Default' / 'Local Storage' / 'leveldb', data_root, True))
+        self.assertFalse(storage._is_workbuddy_leveldb_file(
+                data_root / 'Default' / 'Local Storage Copy' / 'leveldb' / 'LOG', data_root, False))
+        session_storage = data_root / 'Default' / 'Session Storage'
+        session_file = session_storage / 'LOG'
+        self.assertTrue(storage._is_workbuddy_session_storage_file(session_file, data_root, False))
+        self.assertFalse(storage._is_workbuddy_session_storage_file(session_storage, data_root, True))
+        self.assertFalse(storage._is_workbuddy_session_storage_file(
+                session_storage / 'nested' / 'LOG', data_root, False))
+        self.assertFalse(storage._is_workbuddy_session_storage_file(
+                session_storage.with_name('Session Storage Copy') / 'LOG', data_root, False))
+        self.assertTrue(storage._is_workbuddy_restricted_acl_path(app_cache / 'entry', data_root, False))
+        self.assertTrue(storage._is_workbuddy_restricted_acl_path(
+                data_root / 'Default' / 'Local Storage' / 'leveldb' / 'LOG', data_root, False))
+        self.assertTrue(storage._is_workbuddy_restricted_acl_path(session_file, data_root, False))
+        self.assertFalse(storage._is_workbuddy_restricted_acl_path(session_storage, data_root, True))
+        self.assertFalse(storage._is_workbuddy_restricted_acl_path(
+                session_storage / 'nested' / 'LOG', data_root, False))
+        self.assertFalse(storage._is_workbuddy_restricted_acl_path(
+                session_storage.with_name('Session Storage Copy') / 'LOG', data_root, False))
+        cache_dir = root / 'localappdata' / 'Microsoft' / 'Windows' / 'Caches'
+        cache_file = cache_dir / 'cversions.3.db'
+        self.assertTrue(storage._is_workbuddy_windows_cache_file(cache_file, root, False))
+        self.assertTrue(storage._is_workbuddy_windows_cache_file(cache_dir / 'another.db', root, False))
+        self.assertFalse(storage._is_workbuddy_windows_cache_file(cache_dir, root, True))
+        self.assertFalse(storage._is_workbuddy_windows_cache_file(cache_dir / 'nested' / 'entry.db', root, False))
+        self.assertFalse(storage._is_workbuddy_windows_cache_file(
+                cache_dir.with_name('Caches Copy') / 'entry.db', root, False))
+        sid = FakeSecurity.sid
+        capability = storage.WORKBUDDY_APP_CAPABILITY_SID
+        appcontainer = [(0, 0, 0x1301bf, capability), (0, 0x0b, 0xe0010000, capability),
+                        (0, 0x13, 0x1f01ff, 'S-1-5-18'), (0, 0x13, 0x1f01ff, sid)]
+        leveldb = [(1, 0, 0x20, 'S-1-1-0'), (0, 0x10, 0x1f01ff, 'S-1-5-18'),
+                   (0, 0x10, 0x1f01ff, sid)]
+        leveldb_file = data_root / 'Default' / 'Local Storage' / 'leveldb' / 'LOG'
+        self.assertTrue(storage._check_workbuddy_app_data_aces(app_cache, data_root,
+                sid, sid, True, appcontainer))
+        self.assertTrue(storage._check_workbuddy_app_data_aces(leveldb_file, data_root,
+                sid, sid, False, leveldb))
+        self.assertTrue(storage._check_workbuddy_app_data_aces(session_file, data_root,
+                sid, sid, False, leveldb))
+        with self.assertRaises(storage.ProfileError):
+            storage._check_workbuddy_app_data_aces(leveldb_file, data_root,
+                    sid, sid, False, appcontainer)
+        with self.assertRaises(storage.ProfileError):
+            storage._check_workbuddy_app_data_aces(app_cache, data_root,
+                    sid, sid, True, leveldb)
+        with self.assertRaises(storage.ProfileError):
+            storage._check_workbuddy_app_data_aces(session_storage / 'nested' / 'LOG', data_root,
+                    sid, sid, False, leveldb)
+        with self.assertRaises(storage.ProfileError):
+            storage._check_workbuddy_app_data_aces(
+                    session_storage.with_name('Session Storage Copy') / 'LOG', data_root,
+                    sid, sid, False, leveldb)
+        package_sid, capability_sid = 'S-1-15-2-123', 'S-1-15-3-456'
+        windows_cache = [
+            (0, 0, 0x1f01ff, sid), (0, 0, 0x120089, package_sid),
+            (0, 0, 0x120089, capability_sid), (0, 0x10, 0x1f01ff, 'S-1-5-18'),
+            (0, 0x10, 0x1f01ff, sid),
+        ]
+        self.assertTrue(storage._check_workbuddy_windows_cache_aces(sid, sid, windows_cache))
+        for changed in (
+                [windows_cache[0], (0, 0, 0x1f01ff, package_sid), *windows_cache[2:]],
+                [windows_cache[0], windows_cache[2], windows_cache[1], *windows_cache[3:]],
+                [*windows_cache, (0, 0, 0x120089, package_sid)],
+                [windows_cache[0], windows_cache[1], (0, 0, 0x120089, 'S-1-15-2-789'), *windows_cache[3:]]):
+            with self.assertRaises(storage.ProfileError):
+                storage._check_workbuddy_windows_cache_aces(sid, sid, changed)
+        with self.assertRaises(storage.ProfileError):
+            storage._check_workbuddy_windows_cache_aces('S-1-5-21-999', sid, windows_cache)
+
+    def test_profile_verify_uses_windows_cache_fallback_only_for_direct_files(self):
+        class CacheSecurity(FakeSecurity):
+            def __init__(self):
+                self.strict_failures = []
+                self.accepted_cache_files = []
+
+            def check(self, path, directory, protected=False):
+                path = Path(path)
+                if (not directory and path.parent.name == 'Caches'
+                        and path.parent.parent.name == 'Windows'
+                        and path.parent.parent.parent.name == 'Microsoft'
+                        and path.parent.parent.parent.parent.name == 'localappdata'):
+                    self.strict_failures.append(path)
+                    raise storage.ProfileError('synthetic standard ACL mismatch')
+                return super().check(path, directory, protected)
+
+            def check_workbuddy_windows_cache_file(self, path, profile_root):
+                storage.require(storage._is_workbuddy_windows_cache_file(path, profile_root, False))
+                self.accepted_cache_files.append(Path(path))
+
+        with patch.object(storage, 'WinSecurity', CacheSecurity):
+            with storage.create_profile(self.parent) as profile:
+                cache_dir = profile.root / 'localappdata' / 'Microsoft' / 'Windows' / 'Caches'
+                nested_dir = cache_dir / 'nested'
+                nested_dir.mkdir(parents=True)
+                direct_files = [cache_dir / 'cversions.3.db', cache_dir / 'another.db']
+                for path in direct_files + [nested_dir / 'nested.db']:
+                    path.write_bytes(b'synthetic-cache-fixture')
+                self.assertTrue(profile.verify())
+                self.assertCountEqual(profile._security.strict_failures, direct_files)
+                self.assertCountEqual(profile._security.accepted_cache_files, direct_files)
 
     def test_extra_top_level_state_blocks_reuse(self):
         with storage.create_profile(self.parent) as profile:
@@ -226,6 +412,31 @@ class ProfileFixtureTests(unittest.TestCase):
             with self.assertRaises(storage.ProfileError):
                 profile.environment(node)
 
+    def test_environment_preserves_parent_proxy_without_importing_auth_or_node_options(self):
+        with storage.create_profile(self.parent) as profile:
+            node = self.parent / 'node.exe'; node.write_bytes(b'synthetic-node')
+            for uppercase in (False, True):
+                proxies = {'http_proxy': 'http://127.0.0.1:18080',
+                           'https_proxy': 'http://127.0.0.1:18081',
+                           'all_proxy': 'http://127.0.0.1:18082',
+                           'no_proxy': 'localhost,127.0.0.1'}
+                if uppercase:
+                    proxies = {key.upper(): value for key, value in proxies.items()}
+                parent = dict(proxies, SystemRoot=str(self.parent),
+                              HOME='synthetic-original-home', CODEBUDDY_CONFIG_DIR='synthetic-original-config',
+                              NODE_OPTIONS='synthetic-node-option', NODE_TLS_REJECT_UNAUTHORIZED='0',
+                              CODEBUDDY_API_KEY='synthetic-not-a-key')
+                with self.subTest(uppercase=uppercase), patch.object(storage.os, 'environ', parent), \
+                        patch.object(storage, 'sha', return_value=storage.NODE_EXE_SHA):
+                    result = profile.environment(node)
+                self.assertEqual({key: value for key, value in result.items()
+                                  if key.lower().endswith('_proxy')}, proxies)
+                self.assertEqual(len({key.lower() for key in result}), len(result))
+                self.assertEqual(result['HOME'], str(profile.root / 'home'))
+                self.assertEqual(result['CODEBUDDY_CONFIG_DIR'], str(profile.root / 'config'))
+                for key in ('NODE_OPTIONS', 'NODE_TLS_REJECT_UNAUTHORIZED', 'CODEBUDDY_API_KEY'):
+                    self.assertNotIn(key, result)
+
     def test_sid_shape_allows_current_azuread_identity_but_not_sddl_injection(self):
         self.assertTrue(storage._user_sid('S-1-12-1-111-222-333-444'))
         self.assertTrue(storage._user_sid(FakeSecurity.sid))
@@ -277,6 +488,23 @@ class ProfileFixtureTests(unittest.TestCase):
 
 @unittest.skipUnless(os.name == 'nt', 'Actual Windows ACL and byte lock')
 class ActualWindowsProfileTests(unittest.TestCase):
+    def test_session_history_long_path_keeps_original_acl_checks(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            with storage.create_profile(Path(temporary).resolve()) as profile:
+                project = profile.root / 'config' / 'projects' / ('encoded-workspace-' + 'x' * 180)
+                project.parent.mkdir()
+                history = project / 'synthetic-session.jsonl'
+                native_project = Path(storage._win32_name(project))
+                native_history = Path(storage._win32_name(history))
+                native_project.mkdir()
+                try:
+                    native_history.write_text('{}\n', encoding='utf-8')
+                    self.assertGreater(len(str(history)), 260)
+                    self.assertTrue(profile.verify())
+                finally:
+                    native_history.unlink(missing_ok=True)
+                    native_project.rmdir()
+
     def test_real_windows_private_acl_inheritance_lock_and_reopen(self):
         with tempfile.TemporaryDirectory() as temporary:
             parent = Path(temporary).resolve()

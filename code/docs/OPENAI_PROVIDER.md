@@ -17,7 +17,7 @@
 
 ## 服务端配置
 
-使用当前 Native 源码及已审 Bridge `52dc083207a8a02dfc14fe2ec1ea10f0cc0a54a8`。无需原 `sub2api-adapted` fork。
+使用当前 Native 源码及已审 Bridge `c63479e135ac49d7a25a1c0d261b647d16679dbe`。此版本包含 WorkBuddy 发送提示词前已确认停止的回执支持，可配合原生 Sub2API。
 
 在服务的受控环境中配置原有 `NATIVE_BRIDGE_SOURCE_TOKEN` 和 `NATIVE_FACADE_TOKEN`，两者必须不同；Node 使用独立的 `NATIVE_BRIDGE_NODE_TOKEN`。工具不生成、保存、打印或复制密钥。
 

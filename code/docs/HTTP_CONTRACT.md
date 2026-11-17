@@ -106,6 +106,8 @@ P1b 若采用不同兼容路径，需同时改客户端/合同/测试，不能�
 
 Node 在上报结果后检查返回回执的 schema/task/claim/grant/result 全部一致，才持久确认 ACK。ACK 丢失只重传结果。
 
+WorkBuddy 本地试验支持在原 `harness-result` 上提交发送前终止类型 `PRE_PROMPT_ABORTED`。该类型固定为 `failed/stopped_confirmed`、空 `output_blocks`、`usage.state="unknown"`。其 `pre_prompt_abort` 证明字段为 `prompt_intent_issued=false`、`owned_cleanup_confirmed=true`，以及相同的两个布尔字段 `session_new_intent_issued`、`session_close_acknowledged`。普通原生完成继续使用原 schema。Bridge 在同一事务内验证原消费者、claim、grant 及该任务无原生活动事件。HTTP 失败投影为既有 `NATIVE_FAILED`，事件流仅投影失败终态。要接收此回执需相应的 Bridge 和 Node 实现。旧 Bridge 拒绝此类型时 Node 保留待上传回执。
+
 当前 Node 不提供围栏恢复/强制释放，未决 intent 和未知活性持续隔离。测试假账本接受观察更新只是夹具行为，**不能当生产停机证明协议**。真实停止必须同时证明原生执行已停止和旧许可消费者不能迟到 spawn。
 
 ## 6. 测试假网关的路由冻结

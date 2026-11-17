@@ -32,12 +32,17 @@ here use self-authored Client/transport objects, not a vendor process or account
 ## Session semantics and remaining owner integration
 
 Existing beta15 command shim and SessionCoordinator are reusable building blocks,
-not proof of beta16 wire equivalence. Beta16 may emit legitimate usage updates
-without per-request IDs, including cumulative root-only accounting updates.
-`native_harness_api.beta16_events` provides a separately bounded event projection
-for that difference. It never invents request IDs or accounting and does not turn
-cancel notifications into terminal outcomes. Result-bearing updates remain under
-the existing coordinator's strict session/run correlation.
+not proof of beta16 wire equivalence. The pinned beta16 may send session-wide
+`usage_update` and `available_commands_update` notifications without request IDs,
+including after prompt insertion and `running`. The bounded event projection
+consumes both without delivering them to the turn reducer. The catalog is unused
+by the text endpoint. Result-bearing updates still require the existing session
+and run correlation. Neither catalog delivery nor cancellation settles the turn.
+
+The local first-failure diagnostic records the `session/update` subtype from a
+fixed allowlist and the rejecting layer. If buffered update processing fails
+when a valid prompt acknowledgment arrives, the diagnostic identifies the
+update. The record excludes frame contents and identifiers.
 
 Do not send the existing OwnedSessionEngine shim protocol directly to SFE. SFE
 has no `shim/close` RPC: stdin EOF initiates shutdown. EOF alone is neither a

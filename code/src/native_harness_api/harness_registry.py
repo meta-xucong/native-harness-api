@@ -9,6 +9,9 @@ from types import MappingProxyType
 
 from .contracts import Binding, digest, identifier
 from .native_bindings import MAX_BINDINGS, validate_bindings
+from .workbuddy_node_assets import NODE_RELEASES
+
+WORKBUDDY_SFE = 'workbuddy.public-sfe.v1'
 
 # These are the complete identities checked by the concrete asset tools. Paths
 # to identical assets may move without changing the chosen execution recipe.
@@ -27,10 +30,15 @@ ADAPTERS = MappingProxyType({
         'platform': 'windows-x64', 'product_version': 'rust-v0.167.0',
         'protocol_version': 'app-server-v2', 'asset_identity': digest(USER_CLI_CONTRACT),
         'policy_id': 'codex-read-only-on-request-v1'}),
-    'workbuddy.public-sfe.v1': MappingProxyType({
+    WORKBUDDY_SFE: MappingProxyType({
         'platform': 'windows-x64', 'product_version': '5.9.3',
         'protocol_version': 'public-harness-0.2.0-beta.16', 'asset_identity': digest(WORKBUDDY_ASSETS),
         'policy_id': 'workbuddy-local-trial-v1'}),
+    **{adapter: MappingProxyType({
+        'platform': 'windows-x64', 'product_version': version,
+        'protocol_version': 'public-harness-0.2.0-beta.16', 'asset_identity': digest(assets),
+        'policy_id': 'workbuddy-local-trial-v1'})
+       for adapter, (version, assets) in NODE_RELEASES.items()},
     'codex.app-server.v1': MappingProxyType({
         'platform': 'windows-x64', 'product_version': 'rust-v0.167.0',
         'protocol_version': 'app-server-v2', 'asset_identity': digest(CODEX_ASSETS),
@@ -79,7 +87,8 @@ def normalize_recipe(value):
     if not isinstance(recipe['account_fingerprint'], str) or not re.fullmatch('[0-9a-f]{64}', recipe['account_fingerprint']):
         raise ValueError('Confirmed public account fingerprint required')
     binding = binding_for(recipe)
-    prefix = 'workbuddy-' if recipe['adapter_id'] == 'workbuddy.public-sfe.v1' else 'codex-'
+    is_workbuddy = recipe['adapter_id'] == WORKBUDDY_SFE or recipe['adapter_id'] in NODE_RELEASES
+    prefix = 'workbuddy-' if is_workbuddy else 'codex-'
     if not binding.model_alias.startswith(prefix):
         raise ValueError('Alias must name its harness')
     validate_bindings((binding,), mode='harness_local_trial')

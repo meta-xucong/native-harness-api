@@ -131,6 +131,7 @@ class SessionReducer:
         self.deadline=deadline;self.max_events=max_events;self.max_bytes=max_bytes
         self.run_id=None;self.message_id=None;self.outcome='pending';self.fault=None
         self.terminal_reason=None;self.cancel_requested=False;self.insert_acknowledged=False
+        self.failed_update_kind = None
         self._buffer=[];self._events=0;self._bytes=0;self._messages={};self._terminal=False
         self._error_seen=False
         check(on_event is None or callable(on_event))
@@ -201,7 +202,10 @@ class SessionReducer:
             check(type(meta) is dict);run=text(meta.get(REQUEST_ID))
             self.message_id=mid;self.run_id=run;self.insert_acknowledged=True
             buffered=self._buffer;self._buffer=[]
-            for update in buffered:self._reduce(update)
+            for update in buffered:
+                if self.fault:
+                    break
+                self._apply_update(update)
         except ContractError:self._fail('INVALID_ACK')
 
     def update(self, envelope):
@@ -217,8 +221,16 @@ class SessionReducer:
             if envelope['sessionId']!=self.session_id:return
             update=envelope.get('update');check(type(update) is dict)
             if not self.insert_acknowledged:self._buffer.append(update)
-            else:self._reduce(update)
+            else:self._apply_update(update)
         except ContractError:self._fail('INVALID_UPDATE')
+
+    def _apply_update(self, update):
+        try:
+            self._reduce(update)
+        except ContractError:
+            self._fail('INVALID_UPDATE')
+        if self.fault:
+            self.failed_update_kind = update.get('sessionUpdate')
 
     def _reduce(self, update):
         if self.fault:return

@@ -14,25 +14,49 @@ from .beta15_reducer import (
 )
 
 
+class FrameDecodeError(ContractError):
+    """Decoder rejection with a fixed diagnostic category and no input text."""
+
+    def __init__(self, kind):
+        super().__init__('BETA15_CONTRACT_REJECTED')
+        self.kind = kind
+
+
 def decode_frame(raw: bytes, maximum=262144):
     """Decode one bounded complete UTF-8 JSON object, rejecting duplicate keys."""
     check(type(maximum) is int and 0 < maximum <= 4 * 1024 * 1024)
-    check(type(raw) is bytes and 0 < len(raw) <= maximum)
+    if type(raw) is not bytes or len(raw) > maximum:
+        raise FrameDecodeError('invalid_frame_structure')
+
     def pairs(items):
         result = {}
         for key, value in items:
-            check(key not in result)
+            if key in result:
+                raise FrameDecodeError('invalid_frame_structure')
             result[key] = value
         return result
+
     def constant(_value):
-        raise ContractError('BETA15_CONTRACT_REJECTED')
+        raise FrameDecodeError('invalid_json')
+
     try:
-        result = json.loads(raw.decode('utf-8'), object_pairs_hook=pairs,
-                            parse_constant=constant)
-        check(type(result) is dict)
+        line = raw.decode('utf-8')
+    except UnicodeDecodeError:
+        raise FrameDecodeError('invalid_utf8') from None
+
+    try:
+        result = json.loads(line, object_pairs_hook=pairs, parse_constant=constant)
+    except FrameDecodeError:
+        raise
+    except (ValueError, RecursionError):
+        raise FrameDecodeError('invalid_json') from None
+
+    if type(result) is not dict:
+        raise FrameDecodeError('invalid_frame_structure')
+    try:
         return snapshot(result, maximum)[0]
-    except (ValueError, UnicodeError, TypeError, RecursionError):
-        raise ContractError('BETA15_CONTRACT_REJECTED') from None
+    except ContractError:
+        raise FrameDecodeError('invalid_frame_structure') from None
 
 
 class SessionCoordinator:
@@ -148,7 +172,7 @@ class SessionCoordinator:
             self._fail('INVALID_PROMPT_INTENT')
             raise
 
-    def response(self, envelope):
+    def response(self, envelope, *, retain_late_session_for_close=False):
         """One already-correlated connection's RPC result, no raw error export."""
         try:
             envelope = snapshot(envelope)[0]
@@ -168,7 +192,12 @@ class SessionCoordinator:
                 if not self.fault and self.phase == 'finished':
                     self.phase = 'closed'
                 return
-            check(self.tick())
+            active = self.tick()
+            if not active and retain_late_session_for_close and method == 'session/new' and self.fault == 'TIMEOUT':
+                check(self.session_id is None and not self.prompt_intent_issued)
+                self.session_id = text(result.get('sessionId'))
+                return
+            check(active)
             if method == 'session/new':
                 check(self.phase == 'creating')
                 self.session_id = text(result.get('sessionId'))

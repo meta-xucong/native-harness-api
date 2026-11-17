@@ -69,6 +69,59 @@ class PublicSfeSessionTests(unittest.TestCase):
                      ({**identity(), 'mode': 'external'}, None)]:
             p = boot(self.create(), a, s)
             self.assertFalse(p.ready); self.assertEqual(p.new_session('/tmp'), ())
+
+    def test_session_command_catalog_does_not_interrupt_prompt(self):
+        for ack_first in (False, True):
+            with self.subTest(ack_first=ack_first):
+                p = self.selected()
+                request, = unpack(p.prompt('synthetic'))
+                ack = {'messageId': 'input', '_meta': {REQUEST_ID: 'run'}}
+                if ack_first:
+                    response(p, request, ack)
+                event(p, {'sessionUpdate': 'state_update', 'state': 'running', '_meta': {REQUEST_ID: 'run'}})
+                event(p, {'sessionUpdate': 'available_commands_update', '_meta': {},
+                          'availableCommands': [{'name': 'help', 'description': 'Synthetic menu'}]})
+                if not ack_first:
+                    response(p, request, ack)
+                evidence = p.evidence()
+                self.assertEqual(evidence['outcome'], 'pending')
+                self.assertEqual(evidence['turn']['text'], '')
+                self.assertFalse(evidence['turn']['terminal_observed'])
+                self.assertNotIn('first_failed_frame', evidence)
+                event(p, text_event())
+                event(p, terminal())
+                self.assertEqual(p.evidence()['outcome'], 'succeeded')
+
+    def test_notification_diagnostic_retains_only_first_safe_structure(self):
+        for update, stage, subtype in (
+                ({'sessionUpdate': 'available_commands_update', 'availableCommands': 'PRIVATE'},
+                 'projection', 'available_commands_update'),
+                ({'sessionUpdate': 'PRIVATE', 'content': 'PRIVATE'}, 'turn_reducer', 'other'),
+                ({'sessionUpdate': 'config_option_update', 'configOptions': catalog('a')},
+                 'coordinator', 'config_option_update')):
+            with self.subTest(stage=stage):
+                p = self.selected()
+                request, = unpack(p.prompt('synthetic'))
+                response(p, request, {'messageId': 'PRIVATE', '_meta': {REQUEST_ID: 'run'}})
+                event(p, update)
+                event(p, terminal())
+                expected = {'kind': 'invalid_notification', 'method': 'session/update',
+                            'update_type': subtype, 'update_stage': stage}
+                self.assertEqual(p.evidence()['first_failed_frame'], expected)
+                self.assertEqual(p.evidence()['outcome'], 'indeterminate')
+
+    def test_buffered_bad_update_is_not_attributed_to_valid_prompt_ack(self):
+        p = self.selected()
+        request, = unpack(p.prompt('synthetic'))
+        event(p, {'sessionUpdate': 'agent_message_chunk', 'content': {'type': 'text', 'text': 'PRIVATE'}})
+        self.assertIsNone(p.failure_code)
+        response(p, request, {'messageId': 'input', '_meta': {REQUEST_ID: 'run'}})
+        evidence = p.evidence()
+        self.assertTrue(evidence['turn']['insert_acknowledged'])
+        self.assertEqual(evidence['first_failed_frame'], {
+            'kind': 'invalid_notification', 'method': 'session/update',
+            'update_type': 'agent_message_chunk', 'update_stage': 'turn_reducer'})
+        self.assertEqual(evidence['outcome'], 'indeterminate')
     def test_no_admission_before_handshake(self):
         p = self.create(); self.assertEqual(p.new_session('/tmp'), ())
         self.assertFalse(p.ready); self.assertEqual(p.start(), ())
@@ -84,6 +137,69 @@ class PublicSfeSessionTests(unittest.TestCase):
                       wire({'jsonrpc': '2.0', 'id': 1, 'error': {'message': 'PRIVATE'}}), b'\xff', b'[]']:
             p = self.create(); p.start(); p.receive(frame)
             self.assertNotIn('PRIVATE', str(p.evidence())); self.assertFalse(p.ready)
+    def test_prompt_error_preserves_first_failure_even_after_close(self):
+        p = self.selected()
+        req, = unpack(p.prompt('synthetic'))
+        error = {'code': -32603, 'message': 'PRIVATE message', 'data': {'PRIVATE': 'value'}}
+        p.receive(wire({'jsonrpc': '2.0', 'id': req['id'], 'error': error}))
+        expected = {'kind': 'rpc_error', 'method': 'session/prompt', 'rpc_error_code': -32603}
+        self.assertEqual(p.failure_code, 'rpc_error')
+        self.assertEqual(p.evidence()['first_failed_frame'], expected)
+        self.assertFalse(p.evidence()['turn']['insert_acknowledged'])
+        self.assertFalse(p.evidence()['turn']['terminal_observed'])
+        self.assertFalse(p.evidence()['retry_safe'])
+        p.receive(b'{"method":"PRIVATE"}')
+        close, = unpack(p.close_session())
+        response(p, close, {})
+        self.assertTrue(p.evidence()['session_close_acknowledged'])
+        self.assertEqual(p.evidence()['first_failed_frame'], expected)
+        self.assertNotIn('PRIVATE', str(p.evidence()))
+
+    def test_error_requires_exclusive_envelope_and_matching_id(self):
+        for change, kind in (({'id': 90}, 'unknown_response'), ({'id': None}, 'invalid_response'),
+                             ({'error': {'code': True, 'message': 'PRIVATE'}}, 'invalid_response'),
+                             ({'result': {}}, 'invalid_response')):
+            with self.subTest(change=change):
+                p = self.create()
+                req, = unpack(p.start())
+                frame = {'jsonrpc': '2.0', 'id': req['id'], 'error': {'code': -32603, 'message': 'PRIVATE'}}
+                p.receive(wire({**frame, **change}))
+                self.assertEqual(p.failure_code, 'protocol')
+                diagnostic = p.evidence()['first_failed_frame']
+                self.assertEqual(diagnostic['kind'], kind)
+                self.assertNotIn('rpc_error_code', diagnostic)
+                self.assertNotIn('PRIVATE', str(diagnostic))
+
+    def test_prompt_ack_missing_fields_are_distinct_from_invalid_values(self):
+        for ack, missing in (({'_meta': {REQUEST_ID: 'PRIVATE'}}, ['messageId']),
+                             ({'messageId': 'PRIVATE'}, ['_meta']),
+                             ({'messageId': 'PRIVATE', '_meta': {'PRIVATE': 'PRIVATE'}}, ['_meta.' + REQUEST_ID]),
+                             ({}, ['messageId', '_meta']),
+                             ({'messageId': None, '_meta': {REQUEST_ID: 'run'}}, []),
+                             ({'messageId': 'input', '_meta': None}, [])):
+            with self.subTest(ack=ack):
+                p = self.selected()
+                req, = unpack(p.prompt('synthetic'))
+                response(p, req, ack)
+                value = p.evidence()
+                frame = value['first_failed_frame']
+                self.assertEqual(value['failure_code'], 'prompt_ack_missing_fields' if missing else 'protocol')
+                self.assertEqual(frame['kind'], 'prompt_ack_missing_fields' if missing else 'invalid_response')
+                self.assertEqual(frame['method'], 'session/prompt')
+                self.assertEqual(frame.get('missing_fields', []), missing)
+                self.assertFalse(value['turn']['insert_acknowledged'])
+                self.assertFalse(value['retry_safe'])
+                self.assertNotIn('PRIVATE', str(frame))
+
+    def test_malformed_cancel_control_is_a_protocol_fault(self):
+        for change, kind in (({'id': 123}, 'invalid_request'), ({'params': {'requestId': True}}, 'invalid_notification'),
+                             ({'params': {'_meta': None}}, 'invalid_notification')):
+            with self.subTest(change=change):
+                p = self.selected()
+                frame = {'jsonrpc': '2.0', 'method': '$/cancel_request', 'params': {'requestId': 123}}
+                self.assertEqual(p.receive(wire({**frame, **change})), ())
+                self.assertEqual(p.failure_code, 'protocol')
+                self.assertEqual(p.evidence()['first_failed_frame'], {'kind': kind, 'method': '$/cancel_request'})
     def test_reverse_permission_and_elicitation_deny_and_block(self):
         for method, expected in [('elicitation/create', {'action': 'cancel'}),
                                  ('session/request_permission', {'outcome': {'outcome': 'cancelled'}})]:
