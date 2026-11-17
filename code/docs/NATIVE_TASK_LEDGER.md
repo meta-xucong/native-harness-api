@@ -17,6 +17,8 @@ python -m native_harness_api.ledger_runtime --config path/to/native-ledger.json
 
 ## 切换验证与回退
 
-在副本上先验证旧请求查回同一任务、结果回执丢失后的补写、事件游标续读以及并发拒忙。启动回执丢失时，授权记录仍占用槽，Node 只核对同一任务。切换后的无推理验证包括原 Node 心跳、回放、有效和无效凭据，以及关闭准入时经 Sub2API 的模型映射。
+在副本上先验证旧请求查回同一任务、结果回执丢失后的补写、事件游标续读以及并发拒忙。启动回执丢失时，授权记录仍占用槽，Node 只核对同一任务。切换后的无推理验证包括原 Node 心跳、回放、有效和无效凭据，以及关闭准入时经 Sub2API 的模型映射。Sub2API 的用户鉴权、目录与 RPM 检查使用 [只读预检](OPENAI_PROVIDER.md#本机-sub2api-只读预检)。
+
+`native-provider.yml` 在 Linux 和 Windows 运行 `test_native_task_ledger`，使用固定版本 Bridge 生成临时任务，导入 Native 后检查原 ID、原 Idempotency-Key、事件游标、拒忙和未确认回执的恢复。测试执行器只使用 FakeHarness。
 
 在 Native 接单前，停止 Native 服务并用原 `bridge.json` 启动同一个本机隔离 Bridge，保持准入关闭，沿用同一端口和 journal。Native 账本已有新任务时，要先对账新任务并保留原状态，再规划反向迁移。准入或超时都不提供重放已授权推理的许可。
