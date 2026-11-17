@@ -13,7 +13,7 @@ import tempfile
 import threading
 
 UPSTREAM_SHA = '6b4b37db43443b5e88e424fe3c69602cc3810dfb'
-BRIDGE_SHA = '52dc083207a8a02dfc14fe2ec1ea10f0cc0a54a8'
+BRIDGE_SHA = 'c63479e135ac49d7a25a1c0d261b647d16679dbe'
 
 
 def main():

@@ -371,7 +371,11 @@ class LoginSupervisorTests(unittest.TestCase):
         import public_harness_login_profile as storage
         for scenario in ('native-complete','background-auth','login-error'):
             with self.subTest(scenario=scenario),tempfile.TemporaryDirectory() as td:
-                root=Path(td);host=root/'node.exe';host.write_bytes(b'synthetic-not-executed')
+                # A hosted Windows runner may expose the temporary directory
+                # through an 8.3 alias. Use its physical spelling for this test.
+                root = Path(td).resolve(strict=True)
+                host = root/'node.exe'
+                host.write_bytes(b'synthetic-not-executed')
                 p=storage.create_profile(root)
                 assets={'executable':root/'unused.exe','host_node':host,'product_config':root/'unused.json'}
                 class Job:
