@@ -61,6 +61,19 @@ Facade 只监听 `127.0.0.1:8790`。使用既有反向代理提供 HTTPS，流�
 
 SSE是标准choices.delta追加投影，不是厂商原始token流。快照缩短/改写或最终不一致时返回`NATIVE_STREAM_REWRITE_REQUIRED`错误然后关闭，无finish_reason、usage或[DONE]。终态验证成功才输出stop与[DONE]。心跳/状态只在注释中，普通SDK可能不显示；工具审批仍在本机，不会自动放行。原生Sub2API可能追加截断错误，不应把EOF或临时文字当完整成功。
 
+## 本机 Sub2API 只读预检
+
+配置好隔离测试账号后，在 `code/` 目录运行预检。通过进程环境提供测试 Key `SUB2_PREFLIGHT_API_KEY` 和已有管理员会话的 bearer token `SUB2_PREFLIGHT_ADMIN_TOKEN`。测试 Key 须属于命令中填写的用户和分组。模型填写 Sub2API 对外提供的 ID。
+
+```sh
+PYTHONPATH=src python -m native_harness_api.sub2_preflight \
+  --sub2-url http://127.0.0.1:18082 --user-id 100 --group-id 200 --model test-model
+```
+
+预检只向本机 Sub2API 发 GET。它用测试 Key 查询 `/v1/models`，并在查询前后从管理员 RPM 状态接口检查用户和分组是否还有请求额度。使用分组 override 时仍检查用户级上限。报告只包含模型可见性与计数。若 RPM 已用完，等下一分钟窗口后再查。
+
+模型可见性和 RPM 都是即时读数。执行就绪仍需单独核对 [Native 账本和 Node](NATIVE_TASK_LEDGER.md) 的状态。避免把 `POST /v1/chat/completions` 或 Sub2API 的「测试账号」用于预检，测试 POST 会占用正常请求额度，也可能触发真实推理。
+
 ## 重试与恢复限制必须保留
 
 **原生 Sub2API普通raw CC不透传 Idempotency-Key。** 因而每次上游HTTP尝试都是新operation，包括网关/SDK重试。Bridge只保证同operation恢复，不保证整条普通网关路径exactly-once。相同prompt不能被偷偷合并。

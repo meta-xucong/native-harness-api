@@ -44,11 +44,11 @@ jobs:
           python -m unittest discover -s tests
           python -m compileall -q src integration
           PYTHONPATH=src:. python examples/offline_demo.py
-      - name: Real Bridge HTTP provider and legacy regressions
+      - name: Native task ledger and real Bridge HTTP regressions
         working-directory: native/code
         env:
           PYTHONPATH: src:integration:tests:../../bridge/src
-        run: python -m unittest test_openai_provider_bridge test_real_bridge test_multi_harness_bridge -v
+        run: python -m unittest test_native_task_ledger test_openai_provider_bridge test_real_bridge test_multi_harness_bridge -v
       - name: Original Sub2API forwarder to real HTTP synthetic chain
         env:
           PYTHONPATH: native/code/src:native/code/integration:bridge/src
@@ -73,7 +73,7 @@ jobs:
           python-version: '3.13.17'
       - name: Install pinned Bridge dependencies only
         run: python -m pip install fastapi==0.141.1 anyio==4.15.1 pydantic==2.13.4 Pillow==12.3.0 httpx==0.28.1 uvicorn==0.41.0
-      - name: Windows regression and real Bridge HTTP
+      - name: Windows regression, Native task ledger and real Bridge HTTP
         shell: pwsh
         working-directory: native/code
         run: |
@@ -83,5 +83,5 @@ jobs:
           python -m compileall -q src integration
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $env:PYTHONPATH = 'src;integration;tests;../../bridge/src'
-          python -m unittest test_openai_provider_bridge test_real_bridge test_multi_harness_bridge -v
+          python -m unittest test_native_task_ledger test_openai_provider_bridge test_real_bridge test_multi_harness_bridge -v
           exit $LASTEXITCODE
