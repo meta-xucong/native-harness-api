@@ -89,6 +89,12 @@ class HTTPIntegrationTests(unittest.TestCase):
         self.assertEqual(self.fake.start_count, 1)
 
     def test_concurrent_same_key_is_single_task(self):
+        # This asserts deduplication, not a 3/5-second disk/network benchmark.
+        # Windows CI fsync and connection scheduling under 12 simultaneous
+        # callers can exceed the normal fixture deadlines. Keep all requests
+        # and strict outcomes, with a bounded stress-test-only budget per hop.
+        self.http.timeout = self.bridge.http.timeout = 30
+        self.gateway.transport_timeout = 30
         def call(_):
             try:
                 self.send()
@@ -157,7 +163,11 @@ class HTTPIntegrationTests(unittest.TestCase):
 
     def test_unknown_then_permission_revoked_cannot_create_new(self):
         # The route was bound, but transport did not reach Facade.
-        self.routes["a"]["url"] = "http://127.0.0.1:1"
+        import socket
+        unreachable = socket.socket()
+        unreachable.bind(("127.0.0.1", 0))
+        self.addCleanup(unreachable.close)
+        self.routes["a"]["url"] = f"http://127.0.0.1:{unreachable.getsockname()[1]}"
         self.expect("BRIDGE_TRANSPORT_UNCERTAIN", self.send)
         self.gateway.allow_new = False
         self.expect("BRIDGE_TRANSPORT_UNCERTAIN", self.send)

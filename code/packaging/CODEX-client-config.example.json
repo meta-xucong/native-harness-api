@@ -1,0 +1,9 @@
+{
+  "schema_version": 2,
+  "bridge_origin": "https://your-authorized-bridge.example",
+  "user_id": 1,
+  "api_key_id": 1,
+  "windows_data_dir": "C:/NativeHarnessState",
+  "bridge_data_dir": "/var/lib/native-harness-bridge",
+  "targets": []
+}

@@ -23,3 +23,9 @@ secrets/
 credentials/
 .DS_Store
 Thumbs.db
+
+# User-run quick-start configuration and retained local profiles.
+launcher.json
+launcher.json.tmp
+connection/
+profiles/

@@ -1,11 +1,19 @@
 # 开发代理与协作者约束
 
-本仓库当前为 P1a 离线原型。先读 README、blueprint/BLUEPRINT-v0.2.md、blueprint/DESIGN-AUDIT-v0.2.md、code/README.md、code/docs/HTTP_CONTRACT.md 和 code/docs/IMPLEMENTATION_STATUS.md。docs/ 与 audit/ 是 v0.1 历史快照，不覆盖审定 v0.2。代码与蓝图必须分放 code/、blueprint/。
+Native 独立任务账本的合同见 `code/docs/NATIVE_TASK_LEDGER.md`。该本机隔离模式由 Native 负责 WorkBuddy 的账本和调度，保留原 Provider / Node HTTP 合同。迁移使用已收尾账本的副本，单个逻辑账本只允许一个调度方。Alchemy Render Bridge 保持独立。
+
+当前普通 Provider 增量先读 `blueprint/NATIVE-OPENAI-PROVIDER-BLUEPRINT.md`、`NATIVE-OPENAI-PROVIDER-DEVELOPMENT.md` 及两份独审。只改 Native 入口/配置/测试，不改 Bridge、Node、Adapter 或原生 Sub2API。新 `ingress:openai` 从 provider key 绑定固定资源域，不具备可信下游用户身份；这是对下文旧 Sub2 认证归属要求的显式入口例外，不放开多租户。无透传幂等时每 HTTP 为新operation，不能用prompt hash或409声称端到端只执行一次。保留旧入口/旧任务恢复，unknown usage不造token，只允许非收费试验。
+
+当前增量先读 `blueprint/EXISTING-CLI-ADDENDUM.md` 及其独立审计。Codex 默认改为已有官方 CLI / 同用户同 CODEX_HOME；本工具不读取复制凭据，旧 managed adapter 与 WorkBuddy 已接受任务恢复必须保留。仅 Native 最小适配，Bridge/Sub2API 不改；不运行真实账号/模型，不部署/合并，不声称商业转供获准。
+
+本分支当前为 P1b 接缝开发，真实 Bridge HTTP 可测试，Sub2API PostgreSQL 完整闭环未验收，模型执行仍仅 synthetic。先读 README、blueprint/BLUEPRINT-v0.2.md、blueprint/P1B-ADDENDUM.md、blueprint/DESIGN-AUDIT-v0.2.md、code/README.md、code/docs/HTTP_CONTRACT.md 和 code/docs/IMPLEMENTATION_STATUS.md。docs/ 与 audit/ 是 v0.1 历史快照，不覆盖审定 v0.2。代码与蓝图必须分放 code/、blueprint/。
+
+P2 独立本机试验工具另见 blueprint/P2-LOCAL-TRIAL-ADDENDUM.md 和 code/docs/WORKBUDDY_LOCAL_TRIAL.md。仅允许本机用户显式选择官方 WorkBuddy bundle、模型回读和一次 prompt；不放开 P1b synthetic 网络渠道，不读取厂商凭据，不自动推理/重试/永久审批。云端开发只跑离线协议 fixture，真实账号运行由本机用户明确确认。打包保持固定官方 Python SHA/许可和精确源码 revision，不能用可下载包本身冒称真实 WorkBuddy 已通过。
 
 ## 不可变边界
 
 - 本地官方 Harness 执行模型调用；VPS 只做任务和 API 包装。禁止提取厂商凭据后自己请求内部模型接口，禁止云端直接推理 fallback。
-- Sub2API 管用户/Key；Bridge 是唯一执行账本；Facade 不新建第二派发队列，PC journal 只作同任务恢复证据。
+- Sub2API 管用户/Key。每个部署只有一个权威执行账本，由配置选用 Native 任务账本或既有 Bridge。Facade 不新建第二派发队列，PC journal 只作同任务恢复证据。
 - 原生工具与审批保留；不默认全关工具，也不默认 fullAccess/自动批准。
 - 同任务已可能开始时禁止重新生成；未知状态、网络超时、租约过期不是安全重试依据。
 - 回放先于新准入；节点离线不能阻断已完成结果的合法回放。结果过期只能报过期，不能重跑。
@@ -39,3 +47,7 @@
 - 同键在首次未准入、渠道变更和重启后仍冻结原路由；再次准入仍检查当前执行权限。
 - 标准 API 语义与原生 Agent 能力分开，未知用量不填零。
 - 最终提交前跑 code/ 的实际测试及离线 demo；文档抽象脚本通过不能代替它们。
+
+## 后续显式 local-trial 渠道
+
+用户要求完成代码后自行部署/认证。单用户原生试验模式的新合同见 `blueprint/LOCAL-TRIAL-CHANNEL-ADDENDUM.md`；该明确模式扩展上文 P1b synthetic-only 门禁，不改变默认模式或生产限制，也不代表真实账号/模型已验。

@@ -15,9 +15,11 @@ import os
 from pathlib import Path
 import sqlite3
 
-from .contracts import (Binding, Identity, NodeOffer, MAX_RESULT_BYTES, canonical,
-                        checked_task, digest, identifier, normalize_request)
+from .contracts import (Binding, Identity, NodeOffer, MAX_RESULT_BYTES, PRE_PROMPT_ABORTED,
+                        canonical, checked_task, digest, identifier, normalize_request,
+                        pre_prompt_abort_result)
 from .errors import ChannelError
+from .stage_timing import timed_stage, trace_task
 
 
 class NodeBusy(RuntimeError):
@@ -138,9 +140,14 @@ class NodePolicy:
     ledger_instance: str
     allowed_owners: frozenset[tuple[str, str]]
     bindings: tuple[Binding, ...]
+    mode: str = "p1b_integration"
 
     def __post_init__(self):
         try:
+            if self.mode not in {"p1b_integration", "workbuddy_local_trial", "harness_local_trial"}:
+                raise ValueError()
+            if self.mode in {"workbuddy_local_trial", "harness_local_trial"} and len(self.allowed_owners) != 1:
+                raise ValueError()
             identifier(self.source)
             identifier(self.ledger_instance)
             if type(self.allowed_owners) is not frozenset or not self.allowed_owners:
@@ -157,6 +164,8 @@ class NodePolicy:
                     raise ValueError()
                 # Revalidate even an object constructed through unsafe reflection.
                 Binding(**binding.wire())
+                if self.mode in {"workbuddy_local_trial", "harness_local_trial"} and (not binding.model_alias.startswith(("workbuddy-", "codex-") if self.mode == "harness_local_trial" else ("workbuddy-",)) or binding.native_model.startswith("fake-")):
+                    raise ValueError()
             fingerprints = [digest(binding.wire()) for binding in self.bindings]
             if len(set(fingerprints)) != len(fingerprints):
                 raise ValueError()
@@ -193,6 +202,8 @@ class NodePolicy:
             if not isinstance(frozen, dict) or set(frozen) != {'binding', 'messages', 'client_request'}:
                 raise ValueError()
             client = normalize_request(frozen['client_request'])
+            if self.mode in {"workbuddy_local_trial", "harness_local_trial"} and (len(client["messages"]) != 1 or client["messages"][0]["role"] != "user"):
+                raise ValueError()
             if canonical(frozen['client_request']) != canonical(client):
                 raise ValueError()
             checked_task(task, identity, digest(client), self.ledger_instance)
@@ -222,6 +233,7 @@ class Runner:
             raise ValueError('An explicit immutable NodePolicy is required')
         self.policy = policy
         self.client, self.journal, self.adapter = client, journal, adapter
+        self.trace_timing = False
         # A test-only crash/barrier injection, never loaded from external input.
         self.before_start = before_start
 
@@ -234,6 +246,17 @@ class Runner:
                 raise ValueError('Invalid pending liveness')
             return {'outcome': 'pending', 'liveness': value['liveness'],
                     'code': 'APPROVAL_PENDING' if value['liveness'] == 'waiting_approval' else 'EXECUTION_UNCERTAIN'}
+        if value.get('code') == PRE_PROMPT_ABORTED:
+            proof = value.get('pre_prompt_abort')
+            if (not task['request']['binding']['model_alias'].startswith('workbuddy-')
+                    or type(proof) is not dict or proof.get('prompt_intent_issued') is not False
+                    or proof.get('owned_cleanup_confirmed') is not True):
+                raise ValueError('Invalid WorkBuddy pre-prompt abort evidence')
+            opened = proof.get('session_new_intent_issued')
+            result = pre_prompt_abort_result(opened)
+            if proof.get('session_close_acknowledged') is not opened or value != result:
+                raise ValueError('Invalid WorkBuddy pre-prompt abort result')
+            return result
         if value.get('outcome') not in {'succeeded', 'failed', 'cancelled'}:
             raise ValueError('Invalid native outcome')
         if value.get('liveness') not in {'unknown', 'stopped_confirmed'}:
@@ -286,8 +309,9 @@ class Runner:
 
     def _upload(self, record):
         try:
-            self.client.result(record['task_id'], record['claim_id'],
-                               record['grant']['start_grant_id'], record['result'])
+            with timed_stage('node.result_upload'):
+                self.client.result(record['task_id'], record['claim_id'],
+                                   record['grant']['start_grant_id'], record['result'])
         except Exception:
             return {'outcome': 'pending', 'liveness': record['liveness'], 'code': 'RESULT_UPLOAD_PENDING'}
         record['acknowledged'] = True
@@ -299,10 +323,13 @@ class Runner:
         if value['outcome'] == 'pending':
             return self._observe(record, value['liveness'], value['code'])
         record.update(result=value, outcome=value['outcome'], liveness=value['liveness'])
-        self.journal.save(record)  # Must succeed before any upload or slot reuse.
+        with timed_stage('node.journal_result'):
+            self.journal.save(record)  # Must succeed before any upload or slot reuse.
         return self._upload(record)
 
-    def run_once(self):
+    def run_once(self, *, allow_new=True):
+        if type(allow_new) is not bool:
+            raise ValueError('allow_new must be a boolean')
         with self.journal.locked():
             for record in self.journal.records():
                 frozen = record['task']
@@ -328,6 +355,8 @@ class Runner:
                     except Exception:
                         pass
                 return self._observe(record)
+            if not allow_new:
+                return {'outcome': 'idle'}
             offer = self.client.next_task()
             if offer is None:
                 return {'outcome': 'idle'}
@@ -335,30 +364,45 @@ class Runner:
             task_id, attempt_id = task['remote_task_id'], task['attempt_id']
             if self.journal.get(task_id):
                 return {'outcome': 'replayed', 'code': 'ALREADY_CONSUMED'}
+            with trace_task(task_id, enabled=self.trace_timing):
+                return self._start_task(task, task_id, attempt_id)
+
+    def _start_task(self, task, task_id, attempt_id):
+        # Called under the same journal lock as recovery and admission.
+        with timed_stage('node.claim_request'):
             claim = self.client.claim(task_id)
-            if (not isinstance(claim, dict) or claim.get('attempt_id') != attempt_id
-                    or type(claim.get('epoch')) is not int or claim['epoch'] < 1):
-                raise ValueError('Invalid claim identity')
-            identifier(claim['claim_id'])
-            record = {'task_id': task_id, 'attempt_id': attempt_id, 'task': task,
-                      'claim_id': claim['claim_id'], 'epoch': claim['epoch'],
-                      'outcome': 'pending', 'liveness': 'may_be_running', 'launch_intent': False}
+        if (not isinstance(claim, dict) or claim.get('attempt_id') != attempt_id
+                or type(claim.get('epoch')) is not int or claim['epoch'] < 1):
+            raise ValueError('Invalid claim identity')
+        identifier(claim['claim_id'])
+        record = {'task_id': task_id, 'attempt_id': attempt_id, 'task': task,
+                  'claim_id': claim['claim_id'], 'epoch': claim['epoch'],
+                  'outcome': 'pending', 'liveness': 'may_be_running', 'launch_intent': False}
+        with timed_stage('node.journal_claim'):
             self.journal.save(record)  # Covers start-grant response loss.
-            try:
+        try:
+            with timed_stage('node.start_grant_request'):
                 grant = self.client.start(task_id, claim['claim_id'])
-            except Exception:
-                return self._observe(record)
-            if (not isinstance(grant, dict) or grant.get('may_execute') is not True
-                    or grant.get('attempt_id') != attempt_id
-                    or not isinstance(grant.get('start_grant_id'), str) or not grant['start_grant_id']):
-                return self._observe(record)
-            identifier(grant['start_grant_id'])
-            record.update(grant=grant, launch_intent=True)
+        except Exception:
+            return self._observe(record)
+        if (not isinstance(grant, dict) or grant.get('may_execute') is not True
+                or grant.get('attempt_id') != attempt_id
+                or not isinstance(grant.get('start_grant_id'), str) or not grant['start_grant_id']):
+            return self._observe(record)
+        identifier(grant['start_grant_id'])
+        record.update(grant=grant, launch_intent=True)
+        with timed_stage('node.journal_launch_intent'):
             self.journal.save(record)
-            try:
-                if self.before_start is not None:
-                    self.before_start()
-                value = self.adapter.start(task, grant)
-                return self._accept(record, value)
-            except Exception:
-                return self._observe(record, code='OBSERVATION_ERROR')
+        try:
+            if self.before_start is not None:
+                self.before_start()
+            with timed_stage('node.adapter_start'):
+                if getattr(self.adapter, 'supports_live_events', False) is True:
+                    def publish_event(seq, event):
+                        return self.client.event(task_id, claim['claim_id'], grant['start_grant_id'], seq, event)
+                    value = self.adapter.start(task, grant, publish_event=publish_event)
+                else:
+                    value = self.adapter.start(task, grant)
+            return self._accept(record, value)
+        except Exception:
+            return self._observe(record, code='OBSERVATION_ERROR')

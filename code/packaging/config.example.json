@@ -1,0 +1,11 @@
+{
+  "executable": "C:\\REPLACE_WITH_OFFICIAL_INSTALL\\WorkBuddy.exe",
+  "cli_entry": "C:\\REPLACE_WITH_BUNDLED_ENTRY_LOCATION\\codebuddy-lite-wb",
+  "data_dir": "C:\\REPLACE_WITH_YOUR_PRIVATE_DIRECTORY\\probe-state",
+  "workspace": "C:\\REPLACE_WITH_YOUR_PRIVATE_DIRECTORY\\empty-workspace",
+  "model_id": "REPLACE_WITH_VERIFIED_NATIVE_MODEL_ID",
+  "schema": "workbuddy-local-trial-v1",
+  "mode": "workbuddy_bundled_stdio_experiment",
+  "timeout_seconds": 120,
+  "native_config_dir": null
+}

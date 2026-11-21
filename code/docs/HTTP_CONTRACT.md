@@ -1,3 +1,27 @@
+> 新普通 OpenAI provider 入口见 [OPENAI_PROVIDER.md](OPENAI_PROVIDER.md)；下文专用 Sub2API 配置/接缝是旧模式，不是新入口的前置条件。当前增量证据见 [测试记录](OPENAI_PROVIDER_TESTS.md)。
+
+> 后续真实增量扩展以 [native-events-v1](NATIVE_EVENT_STREAM.md) 为准；下文非流式为历史基线。
+
+# P1b 实施补充（P1a 合同基线保留在下文）
+
+真实 Bridge 扩展已在 `alchemy-render-bridge/work/native-harness-p1b` 实现分支落地，下表“现有 main 未实现”描述的是原基线 `cf1e72ec…`，不是本分支完成状态。当前测试仍全部 synthetic；完整真实 PostgreSQL/模型集成未验收。
+
+新增事项：
+
+- Facade 允许显式 `p1b_integration` 模式，仍仅 synthetic/fake。POST 在任何 Bridge IO 前要求 `X-Native-Source`、`X-Native-Ledger` 与 token-bound source/ledger 精确相等；防止冻结凭据引用轮换后静默换账本。旧 `offline_prototype` 测试保持原合同。
+- Node `POST /bridge/node/v1/harness-heartbeat` body `{state: available|busy|attention, binding_digests:[...]}`，真实 Bridge 新准入要求有效心跳。心跳不能释放 slot。旧 journal 的只读恢复/结果重传优先，不能由当前 binding 或心跳失败阻断；`allow_new=False` 恢复阶段不取新任务。
+- Harness 使用专用实例/账本/执行资源；图片心跳与准入在 Harness 实例被拒绝，不支持两个独立 runner 混跑。typed 心跳独立存储，不更新 image capability/freshness；多个实例不可共用同一执行资源。
+- 原候选 Bridge paths 均在该独立实现分支接入同一 tasks/attempts/claims 事务域；结果文本不进入图片通道。默认 `HarnessConfig.accepting_new=false`。
+- Sub2API 专用 `/v1/native-harness/chat/completions` 在真实鉴权后处理，仅明确用户/Key 白名单免费测试。不会进普通 provider 调度、重试或计费；这不是普通 `/v1/chat/completions` 已接通。
+- Sub2API 从冻结 PostgreSQL operation route 重建全部内部头。客户端头不透传；目标/凭据引用/source/ledger/绑定不重选。当前路由变化后 admission=false，允许旧任务查询但禁止未知操作新执行。
+- Sub2API 成功响应严格限定 id/object/created/model/choices、单 choice 和 text/refusal message。缺失字段、非法类型、任何未知字段（包括 function_call/tool_calls 的 null 值）均拒绝，不能透传成成功。
+- 专用 Harness HTTP store 准入最多1个执行+1个等待，底层保持单worker；取消运行HTTP不提前释放worker许可，未启动等待者取消不迟到执行。第3请求仍可503，不赋予重试未知start的许可。图片模式准入不变。
+- 真实 Bridge 未 start 的任务截止后返回原任务 `TASK_EXPIRED`，Facade 映射 410；已完成结果 body TTL 使用原 `RESULT_EXPIRED` 410。都不生成新任务。
+
+见 [实施补充](../../blueprint/P1B-ADDENDUM.md)、[P1b 测试记录](P1B_TEST_REPORT.md)。以下内容保留为 P1a 合同/审计历史，P1b 实施状态以上文为准。
+
+---
+
 # P1a HTTP 合同与真实接缝状态
 
 这是本仓库实际实现的**候选 Harness 扩展合同**，不是宣称现有 Bridge 已支持这些字段。固定参考 Bridge `cf1e72ec3830854fa0983eb9acb92fad62a604c8` 当前仍是图片 schema；直接连接它会拒绝 harness 能力，而不会退到 fake。
@@ -81,6 +105,8 @@ P1b 若采用不同兼容路径，需同时改客户端/合同/测试，不能�
 `outcome` 与 `liveness` 分离。Node 观察异常保留 pending/unknown，业务终态不可变。成功或失败且活性 unknown 都继续占槽。返回最终回答不等于安全释放本地执行能力。
 
 Node 在上报结果后检查返回回执的 schema/task/claim/grant/result 全部一致，才持久确认 ACK。ACK 丢失只重传结果。
+
+WorkBuddy 本地试验支持在原 `harness-result` 上提交发送前终止类型 `PRE_PROMPT_ABORTED`。该类型固定为 `failed/stopped_confirmed`、空 `output_blocks`、`usage.state="unknown"`。其 `pre_prompt_abort` 证明字段为 `prompt_intent_issued=false`、`owned_cleanup_confirmed=true`，以及相同的两个布尔字段 `session_new_intent_issued`、`session_close_acknowledged`。普通原生完成继续使用原 schema。Bridge 在同一事务内验证原消费者、claim、grant 及该任务无原生活动事件。HTTP 失败投影为既有 `NATIVE_FAILED`，事件流仅投影失败终态。要接收此回执需相应的 Bridge 和 Node 实现。旧 Bridge 拒绝此类型时 Node 保留待上传回执。
 
 当前 Node 不提供围栏恢复/强制释放，未决 intent 和未知活性持续隔离。测试假账本接受观察更新只是夹具行为，**不能当生产停机证明协议**。真实停止必须同时证明原生执行已停止和旧许可消费者不能迟到 spawn。
 

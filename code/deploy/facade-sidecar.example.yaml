@@ -1,0 +1,24 @@
+# Merge into the SAME Compose project that defines the existing sub2api service.
+# Review real service name, config path, image digest, ownership and environment.
+# Do not use this file as a replacement for existing database/Redis/service config.
+services:
+  sub2api:
+    environment:
+      CONFIG_FILE: /etc/sub2api/config.yaml
+      NATIVE_FACADE_SERVICE_TOKEN: ${NATIVE_FACADE_SERVICE_TOKEN:?provide dedicated facade service secret}
+    volumes:
+      - /etc/native-harness/sub2api-merged.yaml:/etc/sub2api/config.yaml:ro
+  native-facade:
+    image: ${NATIVE_FACADE_IMAGE:?build and pin the reviewed source image}
+    network_mode: service:sub2api
+    depends_on:
+      - sub2api
+    env_file:
+      - /etc/native-harness/facade.env
+    volumes:
+      - /etc/native-harness/facade.json:/etc/native-harness/facade.json:ro
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    restart: unless-stopped
+    # No ports: Facade listens only on 127.0.0.1:8790 in Sub2API's namespace.

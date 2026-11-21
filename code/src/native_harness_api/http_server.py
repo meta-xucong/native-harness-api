@@ -1,7 +1,16 @@
 """Bounded loopback-only HTTP adapter for P1a. Not a production web server."""
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from dataclasses import dataclass
+import socket
+import time
 from .contracts import MAX_REQUEST_BYTES, canonical, parse_json
 from .errors import ChannelError
+
+
+@dataclass
+class EventStream:
+    frames: object
+    deadline: float
 
 
 def single_header(headers, name, *, required=True):
@@ -24,7 +33,7 @@ def bearer(headers):
     return value[7:]
 
 
-def make_server(application, host="127.0.0.1", port=0):
+def make_server(application, host="127.0.0.1", port=0, *, exclusive=False):
     if host != "127.0.0.1":
         raise ValueError("P1a server binds IPv4 loopback only")
     class Handler(BaseHTTPRequestHandler):
@@ -39,7 +48,8 @@ def make_server(application, host="127.0.0.1", port=0):
             try:
                 if self.headers.get_all("Transfer-Encoding"):
                     raise ChannelError("TRANSFER_ENCODING_NOT_SUPPORTED", 400)
-                if "?" in self.path or "#" in self.path:
+                if "#" in self.path or ("?" in self.path and not getattr(
+                        application, "accepts_query", lambda *_: False)(self.command, self.path)):
                     raise ChannelError("INVALID_PATH", 400)
                 payload = None
                 if self.command == "POST":
@@ -61,6 +71,30 @@ def make_server(application, host="127.0.0.1", port=0):
                 status, body, headers = 408, ChannelError("REQUEST_TIMEOUT", 408).body(), {}
             except Exception:
                 status, body, headers = 500, ChannelError("INTERNAL_ERROR", 500).body(), {}
+            if isinstance(body, EventStream):
+                frames = iter(body.frames)
+                try:
+                    self.send_response(status)
+                    self.send_header("Content-Type", "text/event-stream")
+                    self.send_header("Cache-Control", "no-store")
+                    self.send_header("X-Accel-Buffering", "no")
+                    self.send_header("Connection", "close")
+                    for key, value in headers.items():
+                        self.send_header(key, value)
+                    self.end_headers()
+                    for frame in frames:
+                        remaining = body.deadline - time.monotonic()
+                        if remaining <= 0:
+                            break
+                        self.connection.settimeout(min(5, remaining))
+                        self.wfile.write(frame)
+                        self.wfile.flush()
+                except OSError:
+                    pass  # Only the observer departed, never cancel/re-submit.
+                finally:
+                    frames.close()
+                    self.close_connection = True
+                return
             encoded = canonical(body).encode()
             try:
                 self.send_response(status)
@@ -75,6 +109,15 @@ def make_server(application, host="127.0.0.1", port=0):
                 self.wfile.write(encoded)
             except OSError:
                 pass  # Client departure never mutates a task or cancels native work.
-    server = ThreadingHTTPServer((host, port), Handler)
+    server = ThreadingHTTPServer((host, port), Handler, bind_and_activate=False)
+    try:
+        if exclusive and hasattr(socket, 'SO_EXCLUSIVEADDRUSE'):
+            server.allow_reuse_address = False
+            server.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        server.server_bind()
+        server.server_activate()
+    except BaseException:
+        server.server_close()
+        raise
     server.daemon_threads = True
     return server

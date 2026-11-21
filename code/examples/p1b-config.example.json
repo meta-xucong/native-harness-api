@@ -1,0 +1,17 @@
+{
+  "mode": "p1b_integration",
+  "adapter": "fake",
+  "source": "source-test",
+  "ledger_instance": "ledger-test",
+  "bridge_url": "http://127.0.0.1:8787",
+  "binding": {
+    "binding_id": "binding-test",
+    "revision": 1,
+    "model_alias": "synthetic-test",
+    "native_model": "fake-text"
+  },
+  "owner": ["user-7", "key-9"],
+  "data_dir": "/tmp/native-harness-dedicated-test-node",
+  "accepting_new": false,
+  "port": 8790
+}
