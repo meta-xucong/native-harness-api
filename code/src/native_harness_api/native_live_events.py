@@ -7,9 +7,12 @@ cleanup. Callers retain unfinished workers and never release that attempt slot.
 """
 import json
 from collections import deque
+from contextvars import copy_context
 import math
 import time
 import threading
+
+from .stage_timing import timed_stage
 
 MAX_EVENTS = 512
 MAX_BYTES = 16 * 1024 * 1024
@@ -59,7 +62,8 @@ class LiveEventPump:
         self.byte_rate = (MAX_BYTES - 2 * MAX_EVENT_BYTES - 65536) / horizon
         self.event_rate = (MAX_EVENTS - 66) / horizon
         self.next_snapshot = time.monotonic() + .1
-        self.thread = threading.Thread(target=self._work, daemon=True, name='native-live-events')
+        self.thread = threading.Thread(target=copy_context().run, args=(self._work,),
+                                       daemon=True, name='native-live-events')
         self.thread.start()
 
     def enqueue(self, event):
@@ -112,8 +116,9 @@ class LiveEventPump:
                         self.bytes += size
                         seq = self.count
                         break
-                if self.publish(seq, event) is not True:
-                    raise ValueError()
+                with timed_stage('node.event_ack', event_seq=seq, event_type=event['type']):
+                    if self.publish(seq, event) is not True:
+                        raise ValueError()
                 self.accepted = seq
                 if event['type'] == 'text_snapshot':
                     self.next_snapshot = time.monotonic() + min(1., max(.1, size / self.byte_rate, 1 / self.event_rate))
@@ -121,6 +126,12 @@ class LiveEventPump:
             self.failed.set()
 
     def finish(self, timeout=6):
+        """Close enqueue and drain the original worker.
+
+        A caller with verified native completion and cleanup may pass None to
+        let the existing per-request transport timeouts govern queued delivery.
+        Missing, rejected or invalid receipts still fail the worker.
+        """
         with self.condition:
             self.closed.set()
             self.condition.notify_all()

@@ -172,7 +172,15 @@ class DurableNativeAdapter:
         except Exception:
             result = dict(PENDING)
         if pump is not None:
-            if not pump.finish():
+            completion = result.get('native_completion') if isinstance(result, dict) else None
+            terminal_verified = (isinstance(completion, dict) and completion.get('confirmed') is True
+                                 and result.get('liveness') == 'stopped_confirmed'
+                                 and result.get('outcome') in ('succeeded', 'failed', 'cancelled'))
+            # A verified result stays provisional until the original event
+            # worker finishes. The transport still has its per-request timeout.
+            with timed_stage('adapter.event_drain', terminal_verified=terminal_verified):
+                delivery_confirmed = pump.finish(timeout=None) if terminal_verified else pump.finish()
+            if not delivery_confirmed:
                 result = dict(PENDING)
             if not pump.thread.is_alive():
                 self._retained_event_pumps.remove(pump)

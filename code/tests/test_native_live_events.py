@@ -1,4 +1,8 @@
 import copy
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
+from contextlib import redirect_stderr
+from io import StringIO
+import json
 from pathlib import Path
 import tempfile
 import threading
@@ -8,6 +12,7 @@ from unittest.mock import Mock
 from native_harness_api.native_live_events import LiveEventPump, checked_event
 from native_harness_api.bridge_client import NodeClient
 from native_harness_api.public_sfe_adapter import PublicSfeAdapter
+from native_harness_api.stage_timing import trace_task
 from test_public_sfe_adapter import B, G, task, success
 
 
@@ -140,9 +145,37 @@ class LiveEventsTests(unittest.TestCase):
                 calls.append(1);kw['on_event']({'type':'text_snapshot','text':'partial'})
                 self.assertTrue(kw['cancellation'].wait(1));return success()
             adapter=PublicSfeAdapter(Path(root).resolve(),binding=B,invoke=invoke)
-            self.assertEqual(adapter.start(task(),G,publish_event=lambda *args:False)['outcome'],'pending')
+            log = StringIO()
+            publish = Mock(return_value=False)
+            with redirect_stderr(log), trace_task('t1', enabled=True):
+                self.assertEqual(adapter.start(task(),G,publish_event=publish)['outcome'],'pending')
+            publish.assert_called_once()
+            ack, = [row for row in map(json.loads, log.getvalue().splitlines())
+                    if row['stage'] == 'node.event_ack' and row['event'] == 'end']
+            self.assertTrue(ack['raised'])
+            self.assertNotIn('partial', log.getvalue())
             self.assertEqual(adapter.start(task(),G,publish_event=lambda *args:True)['outcome'],'pending')
             self.assertEqual(calls,[1])
+
+    def test_valid_ack_cannot_supply_missing_terminal_or_cleanup_evidence(self):
+        for missing in ('terminal', 'cleanup'):
+            with self.subTest(missing=missing), tempfile.TemporaryDirectory() as directory:
+                evidence = success()
+                if missing == 'terminal':
+                    evidence['session']['turn']['terminal_observed'] = False
+                else:
+                    evidence['cleanup_confirmed'] = False
+
+                def invoke(**options):
+                    options['on_event']({'type': 'native_status', 'state': 'idle', 'stop_reason': 'end_turn'})
+                    return evidence
+
+                adapter = PublicSfeAdapter(Path(directory).resolve(), binding=B, invoke=invoke)
+                publish = Mock(return_value=True)
+                result = adapter.start(task(), G, publish_event=publish)
+                publish.assert_called_once()
+                self.assertEqual(result['outcome'], 'pending')
+                self.assertEqual(result['liveness'], 'unknown')
 
     def test_runner_routes_live_event_to_original_claim_and_grant(self):
         from test_node import Client, policy
@@ -161,6 +194,95 @@ class LiveEventsTests(unittest.TestCase):
             self.assertEqual(client.starts,1)
             self.assertEqual(runner.run_once()['outcome'],'idle')
             self.assertEqual(client.event.call_count,1)
+
+    def test_late_terminal_event_ack_completes_original_task_without_replay(self):
+        from native_harness_api.node import Journal, NodeBusy, Runner
+        from test_node import Client, policy
+
+        text_sent = threading.Event()
+        terminal_sent = threading.Event()
+        release_text_ack = threading.Event()
+        release_terminal_ack = threading.Event()
+        events = [
+            {'type': 'native_status', 'state': 'running'},
+            {'type': 'text_snapshot', 'text': 'answer'},
+            {'type': 'native_status', 'state': 'idle', 'stop_reason': 'end_turn'},
+        ]
+
+        def delivery(_task_id, _claim_id, _grant_id, sequence, event):
+            if sequence == 2:
+                text_sent.set()
+                if not release_text_ack.wait(4.8):
+                    raise TimeoutError('fixture text ACK timeout')
+            elif sequence == 3:
+                terminal_sent.set()
+                if not release_terminal_ack.wait(4.8):
+                    raise TimeoutError('fixture terminal ACK timeout')
+            return True
+
+        def invoke(**options):
+            for event in events:
+                self.assertTrue(options['on_event'](event))
+            return success()
+
+        log = StringIO()
+        with (redirect_stderr(log), tempfile.TemporaryDirectory() as directory,
+              ThreadPoolExecutor(max_workers=1) as pool):
+            root = Path(directory).resolve()
+            client = Client()
+            client.event = Mock(side_effect=delivery)
+            native = Mock(side_effect=invoke)
+            adapter = PublicSfeAdapter(root, binding=policy().bindings[0], invoke=native)
+            journal = Journal(root / 'journal')
+            runner = Runner(client, journal, adapter, policy=policy())
+            runner.trace_timing = True
+            future = pool.submit(runner.run_once)
+            try:
+                # Each HTTP acknowledgement returns within its transport
+                # budget, while the FIFO drain exceeds the old shared cutoff.
+                self.assertTrue(text_sent.wait(3))
+                with self.assertRaises(FutureTimeout):
+                    future.result(timeout=3.2)
+                release_text_ack.set()
+                self.assertTrue(terminal_sent.wait(3))
+                with self.assertRaises(FutureTimeout):
+                    future.result(timeout=3.2)
+                self.assertEqual(client.result_calls, 0)
+                with self.assertRaises(NodeBusy):
+                    runner.run_once()
+            finally:
+                release_text_ack.set()
+                release_terminal_ack.set()
+
+            result = future.result(timeout=3)
+            self.assertEqual(result['outcome'], 'succeeded')
+            self.assertTrue(journal.get('task-1')['acknowledged'])
+            self.assertEqual(client.results, [('task-1', result)])
+            self.assertEqual(client.starts, 1)
+            self.assertEqual(client.result_calls, 1)
+            self.assertEqual(native.call_count, 1)
+            self.assertEqual([call.args for call in client.event.call_args_list], [
+                ('task-1', 'claim-task-1', 'grant-task-1', sequence, event)
+                for sequence, event in enumerate(events, 1)
+            ])
+            self.assertEqual(runner.run_once(allow_new=False)['outcome'], 'idle')
+
+        records = [json.loads(line) for line in log.getvalue().splitlines()]
+        acks = [row for row in records if row['stage'] == 'node.event_ack']
+        self.assertEqual([(row['task_id'], row['event_seq'], row['event_type'], row['event']) for row in acks], [
+            ('task-1', sequence, event['type'], phase)
+            for sequence, event in enumerate(events, 1) for phase in ('begin', 'end')
+        ])
+        self.assertTrue(all(row['raised'] is False for row in acks if row['event'] == 'end'))
+        delayed = [row['elapsed_ms'] for row in acks if row['event'] == 'end' and row['event_seq'] > 1]
+        self.assertTrue(all(elapsed >= 3000 for elapsed in delayed))
+        self.assertGreater(sum(delayed), 6000)
+        self.assertNotIn('answer', log.getvalue())
+        drain, = [row for row in records if row['stage'] == 'adapter.event_drain' and row['event'] == 'end']
+        self.assertTrue(drain['terminal_verified'])
+        self.assertLess(records.index(acks[-1]), records.index(drain))
+        self.assertLess(records.index(drain), next(i for i, r in enumerate(records)
+                                                 if r['stage'] == 'node.result_upload'))
 
     def test_running_pump_delivers_intermediate_without_finish_even_long_horizon(self):
         seen=[];first=threading.Event();second=threading.Event()
