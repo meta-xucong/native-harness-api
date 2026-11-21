@@ -14,6 +14,7 @@ import stat
 from .native_live_events import LiveEventPump
 from .contracts import Binding, MAX_RESULT_BYTES, canonical, digest, identifier, normalize_request, pre_prompt_abort_result
 from .public_sfe_session import safe_failed_frame
+from .stage_timing import timed_stage
 
 PENDING = {'outcome': 'pending', 'liveness': 'unknown', 'code': 'EXECUTION_UNCERTAIN'}
 
@@ -143,8 +144,9 @@ class DurableNativeAdapter:
         task_id, grant_id, fingerprint, request = self._identity(task, grant)
         # Select both functions from the same immutable binding before intent.
         # Recovery below never resolves a current target or loads a vendor.
-        invoke, projector = self.resolve(Binding(**task['request']['binding']))
-        with self._connect() as con:
+        with timed_stage('adapter.resolve_target'):
+            invoke, projector = self.resolve(Binding(**task['request']['binding']))
+        with timed_stage('adapter.intent_persist'), self._connect() as con:
             # BEGIN IMMEDIATE serializes cross-process admission before native IO.
             con.execute('BEGIN IMMEDIATE')
             row = con.execute('SELECT task_id,request_hash,result FROM evidence WHERE grant_id=?', (grant_id,)).fetchone()
@@ -170,7 +172,15 @@ class DurableNativeAdapter:
         except Exception:
             result = dict(PENDING)
         if pump is not None:
-            if not pump.finish():
+            completion = result.get('native_completion') if isinstance(result, dict) else None
+            terminal_verified = (isinstance(completion, dict) and completion.get('confirmed') is True
+                                 and result.get('liveness') == 'stopped_confirmed'
+                                 and result.get('outcome') in ('succeeded', 'failed', 'cancelled'))
+            # A verified result stays provisional until the original event
+            # worker finishes. The transport still has its per-request timeout.
+            with timed_stage('adapter.event_drain', terminal_verified=terminal_verified):
+                delivery_confirmed = pump.finish(timeout=None) if terminal_verified else pump.finish()
+            if not delivery_confirmed:
                 result = dict(PENDING)
             if not pump.thread.is_alive():
                 self._retained_event_pumps.remove(pump)

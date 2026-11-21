@@ -11,6 +11,7 @@ import threading
 import time
 from .owned_exit_probe import pre_force_exit_probe
 from .public_sfe_session import PublicSfeSession
+from .stage_timing import timed_stage
 
 
 class PublicSfeOwnedSession:
@@ -18,6 +19,7 @@ class PublicSfeOwnedSession:
     MAX_OUTPUT = 4 * 1024 * 1024
     MAX_STDERR = 65536
     REPORT_INTERRUPTION = False
+    _STAGE_NAMES = ('harness.bootstrap', 'harness.session_new', 'harness.model_select', 'harness.turn')
 
     def __init__(self, transport):
         self.transport = transport
@@ -225,17 +227,23 @@ class PublicSfeOwnedSession:
         io_stopped = False
         self._send_deadline = deadline
         try:
-            self.transport.start(command, cwd, env)
+            with timed_stage('harness.process_start'):
+                self.transport.start(command, cwd, env)
             self._start_thread(self._read, self.transport.stdout)
             self._start_thread(self._read, self.transport.stderr, True)
             self._start_thread(self._write, self.transport.stdin)
             self._io_ready = True
             stages = self._stages(workspace, model_id, prompt)
-            for intent, ready in stages:
+            uses_default_stages = type(self)._stages is PublicSfeOwnedSession._stages
+            for index, (intent, ready) in enumerate(stages):
                 if cancellation is not None and cancellation.is_set():
                     self._fail('CANCEL_REQUESTED')
                     break
-                if not self.protocol.tick() or not self._send(intent(), deadline) or not self._pump_until(ready, deadline, cancellation=cancellation):
+                name = self._STAGE_NAMES[index] if uses_default_stages else 'harness.protocol_stage'
+                with timed_stage(name):
+                    ready_observed = (self.protocol.tick() and self._send(intent(), deadline)
+                                      and self._pump_until(ready, deadline, cancellation=cancellation))
+                if not ready_observed:
                     self._fail('TURN_NOT_COMPLETED')
                     break
         except KeyboardInterrupt:

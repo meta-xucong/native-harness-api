@@ -1,4 +1,7 @@
 """Only self-authored Python child; Windows cases use actual owned Job machinery."""
+from contextlib import redirect_stderr
+from io import StringIO
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -9,6 +12,7 @@ import time
 import unittest
 from native_harness_api.public_sfe_adapter import PENDING, project_workbuddy_node_result
 from native_harness_api.public_sfe_owned_session import PublicSfeOwnedSession
+from native_harness_api.stage_timing import trace_task
 from native_harness_api.supervised_acp_transport import SupervisedACPTransport
 from native_harness_api.workbuddy_node_session import WorkBuddyNodeOwnedSession
 
@@ -60,6 +64,21 @@ class PublicSfeOwnedTests(unittest.TestCase):
         self.assertNotIn('shutdown_acknowledged', result)
         with self.assertRaises(ValueError): engine.run([], None, {}, workspace='', model_id='', prompt='', expected_account_digest=digest())
         self.assertEqual(transport.starts, 1)
+
+    def test_workbuddy_timing_identifies_session_setup_without_leaking_content(self):
+        log = StringIO()
+        with redirect_stderr(log), trace_task('local-task', enabled=True):
+            result, _, transport = self.run_mode('node_success', engine_class=WorkBuddyNodeOwnedSession)
+
+        self.assertEqual(result['outcome'], 'succeeded', result)
+        self.assertEqual(transport.starts, 1)
+        records = [json.loads(line) for line in log.getvalue().splitlines()]
+        self.assertEqual([row['stage'] for row in records if row['event'] == 'end'], [
+            'harness.process_start', 'harness.bootstrap', 'harness.session_new',
+            'harness.model_select', 'harness.turn',
+        ])
+        self.assertEqual({row['task_id'] for row in records}, {'local-task'})
+        self.assertNotIn('synthetic', log.getvalue())
 
     def test_precancel_does_not_launch(self):
         transport = SyntheticTransport(); engine = PublicSfeOwnedSession(transport)
