@@ -89,6 +89,8 @@ Client.cmd preflight --config C:\path\windows-node.json
 
 ## 5. 第一条真实操作与恢复
 
+排查 Windows Node 首字延迟时，可在原 Node 启动命令后追加 `--trace-timing`，例如 `Client.cmd node --config C:\path\windows-node.json --trace-timing`。该选项默认关闭。新任务的授权往返、journal 写盘、资产和 profile 检查、WorkBuddy 启动、建会话、选模和运行阶段分别输出到标准错误。每条 JSON 包含本地任务 ID、UTC 时间和阶段名，结束记录附单调时钟耗时。只有 `begin` 的阶段当时仍未返回；`end` 只表示离开该阶段，成功仍以任务终态为准。不会记录 prompt、回复、凭据、文件路径或原生帧，也不会追踪旧任务回读。
+
 默认请求走专用 `/v1/native-harness/chat/completions`。生成器显式输出 `standard_api:false`、`standard_wait_seconds:180`。可由管理员对该专用允许列表 Key 显式开启 `standard_api:true`，使客户端使用 `base_url=https://你的Sub2API/v1` 的 `/v1/chat/completions` 和 `/v1/models`；这不是普通 provider 管理 UI，也不改变其他 Key 的路由。使用允许的 Sub2API API key，body 仅单条 user 文本、`stream:false`、`n:1`，model 为匹配的 `workbuddy-*` alias。为一次逻辑操作保存一个稳定 `Idempotency-Key` 和原始 body。
 
 Facade 的有限等待可能先返回 504。此时不能生成新 key、换模型或换 body；稍后仅重发**同 key、同 body**获取相同操作的状态/结果。相同请求不会换路由重跑。未知进程或 cleanup 情况需要保留 owner 进程与全部账本，不能删除 profile、清库或新建任务伪装重试。

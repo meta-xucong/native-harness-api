@@ -17,6 +17,7 @@ from .bridge_client import BridgeClient, NodeClient
 from .facade import Facade, Service
 from .node import Journal, NodePolicy, Runner
 from .public_sfe_adapter import PublicSfeAdapter
+from .stage_timing import timed_stage
 
 _QUARANTINED_PROFILES = []
 _QUARANTINED_ENGINES = []
@@ -118,12 +119,14 @@ class NativeTrialConfig(RuntimeConfig):
     def invoke(self, *, model_id, messages, on_event=None, cancellation=None):
         if model_id not in {b.native_model for b in self.configured_bindings} or len(messages) != 1 or messages[0]['role'] != 'user':
             raise ValueError('One bound user prompt required')
-        verify_assets, _, open_profile = _tools()
-        from .supervised_acp_transport import SupervisedACPTransport
-        from .public_sfe_owned_session import PublicSfeOwnedSession
-        from public_harness_runtime_assets import verify_node_runtime_assets, workbuddy_command
-        from .workbuddy_node_session import WorkBuddyNodeOwnedSession
-        profile = open_profile(self.profile_root)
+        with timed_stage('workbuddy.load_runtime'):
+            verify_assets, _, open_profile = _tools()
+            from .supervised_acp_transport import SupervisedACPTransport
+            from .public_sfe_owned_session import PublicSfeOwnedSession
+            from public_harness_runtime_assets import verify_node_runtime_assets, workbuddy_command
+            from .workbuddy_node_session import WorkBuddyNodeOwnedSession
+        with timed_stage('workbuddy.profile_open'):
+            profile = open_profile(self.profile_root)
         begun = False
         clean = False
         reusable = False
@@ -134,29 +137,34 @@ class NativeTrialConfig(RuntimeConfig):
                 raise ValueError('Frozen profile mismatch')
             if self.expected_account_fingerprint is not None and profile.expected_account_digest != self.expected_account_fingerprint:
                 raise ValueError('Frozen account confirmation mismatch')
-            assets = (verify_node_runtime_assets(self.assets_root, adapter_id=self.workbuddy_node_adapter)
-                      if self.workbuddy_node_adapter else verify_assets(self.assets_root))
+            with timed_stage('workbuddy.verify_assets'):
+                assets = (verify_node_runtime_assets(self.assets_root, adapter_id=self.workbuddy_node_adapter)
+                          if self.workbuddy_node_adapter else verify_assets(self.assets_root))
             expected_account = profile.expected_account_digest
             workspace = profile.root / 'workspace' / ('request-' + uuid.uuid4().hex)
-            workspace.mkdir()
-            profile.verify()
+            with timed_stage('workbuddy.workspace_create'):
+                workspace.mkdir()
+            with timed_stage('workbuddy.profile_verify'):
+                profile.verify()
             begun = True  # Ambiguous durable state writes must also retain ownership.
             try:
-                profile.begin_execution()
-                if self.workbuddy_node_adapter:
-                    env = profile.environment(assets['host_node'], node_runtime=True)
-                    engine = WorkBuddyNodeOwnedSession(SupervisedACPTransport(),
-                                                       product_version=assets['product_version'])
-                else:
-                    env = profile.environment(assets['host_node'])
-                    engine = PublicSfeOwnedSession(SupervisedACPTransport())
-                result = engine.run(
-                    workbuddy_command(assets),
-                    workspace, env, workspace=str(workspace), model_id=model_id,
-                    prompt=messages[0]['content'], expected_account_digest=expected_account,
-                    timeout=self.execution_timeout, cleanup_timeout=self.cleanup_timeout,
-                    **({} if on_event is None else {'on_event': on_event}),
-                    **({} if cancellation is None else {'cancellation': cancellation}))
+                with timed_stage('workbuddy.profile_prepare'):
+                    profile.begin_execution()
+                    if self.workbuddy_node_adapter:
+                        env = profile.environment(assets['host_node'], node_runtime=True)
+                        engine = WorkBuddyNodeOwnedSession(SupervisedACPTransport(),
+                                                           product_version=assets['product_version'])
+                    else:
+                        env = profile.environment(assets['host_node'])
+                        engine = PublicSfeOwnedSession(SupervisedACPTransport())
+                with timed_stage('workbuddy.session_lifecycle'):
+                    result = engine.run(
+                        workbuddy_command(assets),
+                        workspace, env, workspace=str(workspace), model_id=model_id,
+                        prompt=messages[0]['content'], expected_account_digest=expected_account,
+                        timeout=self.execution_timeout, cleanup_timeout=self.cleanup_timeout,
+                        **({} if on_event is None else {'on_event': on_event}),
+                        **({} if cancellation is None else {'cancellation': cancellation}))
                 clean = result.get('cleanup_confirmed') is True
                 if self.workbuddy_node_adapter:
                     session = result['session']

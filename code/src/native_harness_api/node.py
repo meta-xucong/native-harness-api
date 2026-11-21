@@ -19,6 +19,7 @@ from .contracts import (Binding, Identity, NodeOffer, MAX_RESULT_BYTES, PRE_PROM
                         canonical, checked_task, digest, identifier, normalize_request,
                         pre_prompt_abort_result)
 from .errors import ChannelError
+from .stage_timing import timed_stage, trace_task
 
 
 class NodeBusy(RuntimeError):
@@ -232,6 +233,7 @@ class Runner:
             raise ValueError('An explicit immutable NodePolicy is required')
         self.policy = policy
         self.client, self.journal, self.adapter = client, journal, adapter
+        self.trace_timing = False
         # A test-only crash/barrier injection, never loaded from external input.
         self.before_start = before_start
 
@@ -307,8 +309,9 @@ class Runner:
 
     def _upload(self, record):
         try:
-            self.client.result(record['task_id'], record['claim_id'],
-                               record['grant']['start_grant_id'], record['result'])
+            with timed_stage('node.result_upload'):
+                self.client.result(record['task_id'], record['claim_id'],
+                                   record['grant']['start_grant_id'], record['result'])
         except Exception:
             return {'outcome': 'pending', 'liveness': record['liveness'], 'code': 'RESULT_UPLOAD_PENDING'}
         record['acknowledged'] = True
@@ -320,7 +323,8 @@ class Runner:
         if value['outcome'] == 'pending':
             return self._observe(record, value['liveness'], value['code'])
         record.update(result=value, outcome=value['outcome'], liveness=value['liveness'])
-        self.journal.save(record)  # Must succeed before any upload or slot reuse.
+        with timed_stage('node.journal_result'):
+            self.journal.save(record)  # Must succeed before any upload or slot reuse.
         return self._upload(record)
 
     def run_once(self, *, allow_new=True):
@@ -360,35 +364,45 @@ class Runner:
             task_id, attempt_id = task['remote_task_id'], task['attempt_id']
             if self.journal.get(task_id):
                 return {'outcome': 'replayed', 'code': 'ALREADY_CONSUMED'}
+            with trace_task(task_id, enabled=self.trace_timing):
+                return self._start_task(task, task_id, attempt_id)
+
+    def _start_task(self, task, task_id, attempt_id):
+        # Called under the same journal lock as recovery and admission.
+        with timed_stage('node.claim_request'):
             claim = self.client.claim(task_id)
-            if (not isinstance(claim, dict) or claim.get('attempt_id') != attempt_id
-                    or type(claim.get('epoch')) is not int or claim['epoch'] < 1):
-                raise ValueError('Invalid claim identity')
-            identifier(claim['claim_id'])
-            record = {'task_id': task_id, 'attempt_id': attempt_id, 'task': task,
-                      'claim_id': claim['claim_id'], 'epoch': claim['epoch'],
-                      'outcome': 'pending', 'liveness': 'may_be_running', 'launch_intent': False}
+        if (not isinstance(claim, dict) or claim.get('attempt_id') != attempt_id
+                or type(claim.get('epoch')) is not int or claim['epoch'] < 1):
+            raise ValueError('Invalid claim identity')
+        identifier(claim['claim_id'])
+        record = {'task_id': task_id, 'attempt_id': attempt_id, 'task': task,
+                  'claim_id': claim['claim_id'], 'epoch': claim['epoch'],
+                  'outcome': 'pending', 'liveness': 'may_be_running', 'launch_intent': False}
+        with timed_stage('node.journal_claim'):
             self.journal.save(record)  # Covers start-grant response loss.
-            try:
+        try:
+            with timed_stage('node.start_grant_request'):
                 grant = self.client.start(task_id, claim['claim_id'])
-            except Exception:
-                return self._observe(record)
-            if (not isinstance(grant, dict) or grant.get('may_execute') is not True
-                    or grant.get('attempt_id') != attempt_id
-                    or not isinstance(grant.get('start_grant_id'), str) or not grant['start_grant_id']):
-                return self._observe(record)
-            identifier(grant['start_grant_id'])
-            record.update(grant=grant, launch_intent=True)
+        except Exception:
+            return self._observe(record)
+        if (not isinstance(grant, dict) or grant.get('may_execute') is not True
+                or grant.get('attempt_id') != attempt_id
+                or not isinstance(grant.get('start_grant_id'), str) or not grant['start_grant_id']):
+            return self._observe(record)
+        identifier(grant['start_grant_id'])
+        record.update(grant=grant, launch_intent=True)
+        with timed_stage('node.journal_launch_intent'):
             self.journal.save(record)
-            try:
-                if self.before_start is not None:
-                    self.before_start()
+        try:
+            if self.before_start is not None:
+                self.before_start()
+            with timed_stage('node.adapter_start'):
                 if getattr(self.adapter, 'supports_live_events', False) is True:
                     def publish_event(seq, event):
                         return self.client.event(task_id, claim['claim_id'], grant['start_grant_id'], seq, event)
                     value = self.adapter.start(task, grant, publish_event=publish_event)
                 else:
                     value = self.adapter.start(task, grant)
-                return self._accept(record, value)
-            except Exception:
-                return self._observe(record, code='OBSERVATION_ERROR')
+            return self._accept(record, value)
+        except Exception:
+            return self._observe(record, code='OBSERVATION_ERROR')

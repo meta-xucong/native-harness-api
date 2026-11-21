@@ -14,6 +14,7 @@ import stat
 from .native_live_events import LiveEventPump
 from .contracts import Binding, MAX_RESULT_BYTES, canonical, digest, identifier, normalize_request, pre_prompt_abort_result
 from .public_sfe_session import safe_failed_frame
+from .stage_timing import timed_stage
 
 PENDING = {'outcome': 'pending', 'liveness': 'unknown', 'code': 'EXECUTION_UNCERTAIN'}
 
@@ -143,8 +144,9 @@ class DurableNativeAdapter:
         task_id, grant_id, fingerprint, request = self._identity(task, grant)
         # Select both functions from the same immutable binding before intent.
         # Recovery below never resolves a current target or loads a vendor.
-        invoke, projector = self.resolve(Binding(**task['request']['binding']))
-        with self._connect() as con:
+        with timed_stage('adapter.resolve_target'):
+            invoke, projector = self.resolve(Binding(**task['request']['binding']))
+        with timed_stage('adapter.intent_persist'), self._connect() as con:
             # BEGIN IMMEDIATE serializes cross-process admission before native IO.
             con.execute('BEGIN IMMEDIATE')
             row = con.execute('SELECT task_id,request_hash,result FROM evidence WHERE grant_id=?', (grant_id,)).fetchone()

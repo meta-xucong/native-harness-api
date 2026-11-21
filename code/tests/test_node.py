@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import copy
+from contextlib import redirect_stderr
+from io import StringIO
+import json
 import multiprocessing
 from pathlib import Path
 import tempfile
@@ -115,6 +118,42 @@ class NodeTests(unittest.TestCase):
         record = Journal(self.root / 'node').get('task-1')
         self.assertTrue(record['launch_intent'])
         self.assertTrue(record['acknowledged'])
+
+    def test_timing_locates_lost_grant_without_logging_details_or_recovering_twice(self):
+        self.client.lose_grant = True
+        runner = self.runner()
+        runner.trace_timing = True
+        log = StringIO()
+        with redirect_stderr(log):
+            first = runner.run_once()
+            recovered = runner.run_once(allow_new=False)
+
+        self.assertEqual(first, recovered)
+        self.assertEqual(first['outcome'], 'pending')
+        self.assertEqual(self.client.starts, 1)
+        self.assertEqual(self.adapter.start_count, 0)
+        records = [json.loads(line) for line in log.getvalue().splitlines()]
+        stages = ['node.claim_request', 'node.journal_claim', 'node.start_grant_request']
+        self.assertEqual([(row['stage'], row['event']) for row in records],
+                         [(stage, event) for stage in stages for event in ('begin', 'end')])
+        for record in records:
+            self.assertEqual(record['task_id'], 'task-1')
+            self.assertEqual(record['type'], 'native_stage_timing')
+            if record['event'] == 'end':
+                self.assertGreaterEqual(record['elapsed_ms'], 0)
+        self.assertTrue(records[-1]['raised'])
+        self.assertNotIn('response was lost', log.getvalue())
+        self.assertNotIn('synthetic test', log.getvalue())
+
+    def test_unwritable_timing_does_not_change_terminal_result(self):
+        runner = self.runner()
+        runner.trace_timing = True
+        log = StringIO()
+        log.close()
+        with redirect_stderr(log):
+            self.assertEqual(runner.run_once()['outcome'], 'succeeded')
+        self.assertEqual(self.adapter.start_count, 1)
+        self.assertTrue(self.journal.get('task-1')['acknowledged'])
 
     def test_second_independent_task_only_after_confirmed_stop(self):
         runner = self.runner()

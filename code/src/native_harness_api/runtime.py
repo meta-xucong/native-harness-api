@@ -147,11 +147,12 @@ def main(argv=None):
     parser.add_argument("--config", required=True, type=Path)
     parser.add_argument("--once", action="store_true", help="One node heartbeat/recovery/poll cycle")
     parser.add_argument("--recover-only", action="store_true", help="One journal recovery pass, without polling for new work")
+    parser.add_argument("--trace-timing", action="store_true", help="Write local stage timings for new node tasks to stderr")
     args = parser.parse_args(argv)
     try:
         config = RuntimeConfig.load(args.config)
         if args.role == "facade":
-            if args.once or args.recover_only:
+            if args.once or args.recover_only or args.trace_timing:
                 raise ValueError("Node-only options")
             with make_server(config.facade(), port=config.port) as server:
                 server.serve_forever()
@@ -162,6 +163,7 @@ def main(argv=None):
                     print('No existing journal at the configured location.', file=sys.stderr)
                     return 1
             runner = config.runner()
+            runner.trace_timing = args.trace_timing
             if args.recover_only:
                 status = runner.run_once(allow_new=False)
                 print(canonical({k: status[k] for k in ("outcome", "liveness", "code") if k in status}))
